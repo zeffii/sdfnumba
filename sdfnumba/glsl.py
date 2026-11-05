@@ -17,7 +17,9 @@ the offscreen tests:
 
     push constants   mat4 ViewProjection, vec4 cam (xyz, w=1 if perspective),
                      vec4 view_dir (xyz, w=world size of a pixel at distance 1,
-                     or of any pixel in an orthographic view)
+                     or of any pixel in an orthographic view), bool srgbTarget
+                     (Blender sets it; its overlay framebuffer is sRGB, so
+                     colours are converted to linear before writing)
     sampler2D prm_tex   row 0: shape parameters, row 1: viewer settings,
                         4 floats per texel
     vec3 pos  ->  vec3 world_pos  ->  vec4 FragColor (+ gl_FragDepth)
@@ -200,6 +202,19 @@ void main() {
 }
 '''
 
+TO_FRAMEBUFFER = '''
+vec4 to_framebuffer(vec4 c) {
+    // colours here are sRGB; an sRGB target expects linear values
+    if (srgbTarget) {
+        vec3 v = max(c.rgb, vec3(0.0));
+        vec3 lo = v / 12.92;
+        vec3 hi = pow((v + 0.055) / 1.055, vec3(2.4));
+        c.rgb = mix(lo, hi, step(vec3(0.04045), v));
+    }
+    return c;
+}
+'''
+
 FRAGMENT_MAIN = '''
 float pixel_size(float t) {
     // world size of one pixel at distance t along the ray
@@ -268,7 +283,7 @@ void main() {
 
     if (!hit) {
         if (SHOW_OUTLINE > 0.5 && closest < LINE_WIDTH) {
-            FragColor = vec4(LINE_COLOR, 1.0);
+            FragColor = to_framebuffer(vec4(LINE_COLOR, 1.0));
         } else {
             discard;
         }
@@ -280,7 +295,7 @@ void main() {
         vec3 col = base * (0.25 + 0.6 * key + 0.15 * sky);
         col += 0.12 * pow(1.0 - key, 3.0);
         col = mix(col, LINE_COLOR, max(seam, crease));
-        FragColor = vec4(col, 1.0);
+        FragColor = to_framebuffer(vec4(col, 1.0));
     }
     vec4 clip = ViewProjection * vec4(p, 1.0);
     gl_FragDepth = 0.5 + 0.5 * clip.z / clip.w;
@@ -298,17 +313,19 @@ void main() {
     vec3 inside = vec3(0.85, 0.45, 0.35), outside = vec3(0.35, 0.55, 0.85);
     vec3 col = mix(outside, inside, step(d, 0.0)) * (0.75 + 0.25 * line);
     col = mix(col, LINE_COLOR, zero);
-    FragColor = vec4(col, 0.9);
+    FragColor = to_framebuffer(vec4(col, 0.9));
 }
 '''
 
 
 def fragment_source(program):
-    return PRM_FROM_TEXTURE + _settings_glsl() + shape_source(program) + FRAGMENT_MAIN
+    return (PRM_FROM_TEXTURE + _settings_glsl() + TO_FRAMEBUFFER +
+            shape_source(program) + FRAGMENT_MAIN)
 
 
 def slice_fragment_source(program):
-    return PRM_FROM_TEXTURE + _settings_glsl() + shape_source(program) + SLICE_MAIN
+    return (PRM_FROM_TEXTURE + _settings_glsl() + TO_FRAMEBUFFER +
+            shape_source(program) + SLICE_MAIN)
 
 
 def box_triangles(lo, hi):

@@ -20,6 +20,7 @@ uniform sampler2D prm_tex;
 uniform mat4 ViewProjection;
 uniform vec4 cam;
 uniform vec4 view_dir;
+uniform bool srgbTarget;
 in vec3 world_pos;
 out vec4 FragColor;
 '''

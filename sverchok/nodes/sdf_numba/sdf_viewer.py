@@ -5,14 +5,25 @@
 the GPU.  No mesh is made, so edges stay exact and parameter changes are
 instant.  Use the SDF Mesh node when you want actual geometry.
 
+Follows the conventions of Viewer Draw Mk5:
+- shaders use GPUShaderCreateInfo (OpenGL, Metal and Vulkan), compiled once
+  per shape structure and cached at module level
+- nothing touching the GPU happens in process(): shaders, batches and the
+  parameter texture are made on the first redraw, which has a GPU context
+- colours go through to_framebuffer() for Blender's sRGB overlay target
+- GPU state is reset after drawing
+
+Unlike Mk5's lines, the raymarcher must write gl_FragDepth (the depth comes
+from where each ray hits the shape), so early-z is off for these fragments.
+
 How it fits together:
-  process()   compiles the shape's GLSL (cached per shape structure),
-              uploads its parameters plus the viewer settings as a small
-              texture, and registers the draw callback
-  draw_sdf()  runs every redraw: passes the current view to the shader and
-              draws the box around the shape; the fragment shader marches
-              the rays and writes colour and depth
+  process()   prepares the shader sources, the box (or slice) geometry and
+              the texture data: shape parameters plus viewer settings
+  draw_sdf()  every redraw: builds what's missing, passes the current view,
+              and draws the box; the fragment shader marches the rays
 """
+
+from types import SimpleNamespace
 
 import bpy
 import gpu
@@ -24,7 +35,7 @@ from sverchok.data_structure import node_id, updateNode
 from sverchok.node_tree import SverchCustomTreeNode
 from sverchok.ui.bgl_callback_3dview import callback_disable, callback_enable
 
-_shaders = {}   # (program key, 'shape' | 'slice') -> GPUShader, shared by all viewers
+_SHADERS = {}   # (program key, 'shape' | 'slice') -> GPUShader, shared by all viewers
 
 
 def _sdfnumba():
@@ -38,73 +49,96 @@ def _sdfnumba():
     return sdfnumba, glsl
 
 
-def _make_shader(glsl, fragment):
+def _build_shader(vertex, fragment):
+    iface = gpu.types.GPUStageInterfaceInfo('sv_sdf_numba_iface')
+    iface.smooth('VEC3', 'world_pos')
+
     info = gpu.types.GPUShaderCreateInfo()
+    info.push_constant('BOOL', 'srgbTarget')
     info.push_constant('MAT4', 'ViewProjection')
     info.push_constant('VEC4', 'cam')
     info.push_constant('VEC4', 'view_dir')
     info.sampler(0, 'FLOAT_2D', 'prm_tex')
     info.vertex_in(0, 'VEC3', 'pos')
-    iface = gpu.types.GPUStageInterfaceInfo('sdf_numba_iface')
-    iface.smooth('VEC3', 'world_pos')
     info.vertex_out(iface)
     info.fragment_out(0, 'VEC4', 'FragColor')
     if hasattr(info, 'depth_write'):      # Blender 4.2+; needed on Metal and Vulkan
         info.depth_write('ANY')
-    info.vertex_source(glsl.VERTEX)
+    info.vertex_source(vertex)
     info.fragment_source(fragment)
-    shader = gpu.shader.create_from_info(info)
-    del iface
+    return gpu.shader.create_from_info(info)
+
+
+def get_shader(key, vertex, fragment):
+    """compile once per shape structure; needs a GPU context, so only call
+    from the draw callback"""
+    shader = _SHADERS.get(key)
+    if shader is None:
+        shader = _SHADERS[key] = _build_shader(vertex, fragment)
     return shader
 
 
-def _shader(glsl, program, kind):
-    key = (program.key, kind)
-    if key not in _shaders:
-        frag = (glsl.fragment_source(program) if kind == 'shape'
-                else glsl.slice_fragment_source(program))
-        _shaders[key] = _make_shader(glsl, frag)
-    return _shaders[key]
+def view_info(rd, region):
+    """(camera position, perspective flag), view direction, world size of a
+    pixel (at distance 1 in perspective views)"""
+    inv = rd.view_matrix.inverted()
+    persp = abs(rd.window_matrix[3][3]) < 0.5
+    cam = inv.translation
+    view_dir = (-inv.col[2].xyz).normalized()
+    pixel = 2.0 / (rd.window_matrix[1][1] * max(region.height, 1))
+    return (cam.x, cam.y, cam.z, 1.0 if persp else 0.0), (*view_dir, pixel)
 
 
-def _texture(glsl, params, settings):
-    data = glsl.parameter_texture_data(params, settings)
-    buf = gpu.types.Buffer('FLOAT', data.size, data.ravel().tolist())
-    return gpu.types.GPUTexture((data.shape[1], 2), format='RGBA32F', data=buf)
-
-
-def _set(shader, kind, name, value):
-    # uniforms a shader doesn't use are compiled away; setting them would fail
+def _uniform(shader, name, value):
+    # a uniform the shader doesn't use is compiled away; setting it would fail
     try:
-        if kind == 'float':
-            shader.uniform_float(name, value)
-        else:
-            shader.uniform_sampler(name, value)
+        shader.uniform_float(name, value)
     except ValueError:
         pass
 
 
 def draw_sdf(context, state):
-    rv3d = context.region_data or context.space_data.region_3d
-    view_inv = rv3d.view_matrix.inverted()
-    cam = view_inv.translation
-    view_dir = (view_inv.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
-    # world size of one pixel (at distance 1 in perspective views)
-    pixel = 2.0 / (rv3d.window_matrix[1][1] * max(context.region.height, 1))
-    persp = 1.0 if rv3d.is_perspective else 0.0
+    rd = context.region_data
+    region = context.region
+    if rd is None or region is None:
+        return
+
+    if state.texture is None:
+        data = state.texture_data
+        buf = gpu.types.Buffer('FLOAT', data.size, data.ravel().tolist())
+        state.texture = gpu.types.GPUTexture((data.shape[1], 2), format='RGBA32F', data=buf)
+
+    cam, view_dir = view_info(rd, region)
+    vp = rd.perspective_matrix
 
     gpu.state.depth_test_set('LESS_EQUAL')
     gpu.state.depth_mask_set(True)
     gpu.state.face_culling_set('NONE')
-    for shader, batch, blend in state['draws']:
-        gpu.state.blend_set(blend)
-        shader.bind()
-        _set(shader, 'float', 'ViewProjection', rv3d.perspective_matrix)
-        _set(shader, 'float', 'cam', (*cam, persp))
-        _set(shader, 'float', 'view_dir', (*view_dir, pixel))
-        _set(shader, 'sampler', 'prm_tex', state['texture'])
-        batch.draw(shader)
-    gpu.state.blend_set('NONE')
+    try:
+        for part in state.parts:
+            if part.failed:
+                continue
+            try:
+                shader = get_shader(part.key, state.vertex, part.fragment)
+            except Exception as err:
+                # report once, not on every redraw
+                print(f"SDF Viewer: shader failed to compile: {err}")
+                part.failed = True
+                continue
+            if part.batch is None:
+                part.batch = batch_for_shader(shader, 'TRIS', {'pos': part.tris})
+            gpu.state.blend_set(part.blend)
+            shader.bind()
+            _uniform(shader, 'ViewProjection', vp)
+            _uniform(shader, 'cam', cam)
+            _uniform(shader, 'view_dir', view_dir)
+            shader.uniform_sampler('prm_tex', state.texture)
+            part.batch.draw(shader)
+    finally:
+        gpu.state.face_culling_set('NONE')
+        gpu.state.depth_mask_set(False)
+        gpu.state.depth_test_set('NONE')
+        gpu.state.blend_set('NONE')
 
 
 class SvSDFViewerNode(SverchCustomTreeNode, bpy.types.Node):
@@ -206,9 +240,11 @@ class SvSDFViewerNode(SverchCustomTreeNode, bpy.types.Node):
         return None
 
     def process(self):
+        if bpy.app.background:
+            return
         n_id = node_id(self)
         callback_disable(n_id)
-        if bpy.app.background or not (self.activate and self.id_data.sv_show):
+        if not (self.id_data.sv_show and self.activate):
             return
         if not self.inputs['SDF'].is_linked:
             return
@@ -235,21 +271,22 @@ class SvSDFViewerNode(SverchCustomTreeNode, bpy.types.Node):
             slice_axis=float(self.slice_axis), slice_offset=self.slice_offset,
             slice_spacing=self.slice_spacing)
 
-        draws = []
+        parts = []
         if self.show_shape:
-            shader = _shader(glsl, program, 'shape')
-            tris = glsl.box_triangles(lo, hi)
-            draws.append((shader, batch_for_shader(shader, 'TRIS', {'pos': tris.tolist()}),
-                          'NONE'))
+            parts.append(SimpleNamespace(
+                key=(program.key, 'shape'), fragment=glsl.fragment_source(program),
+                tris=glsl.box_triangles(lo, hi), blend='NONE', batch=None, failed=False))
         if self.show_slice:
-            shader = _shader(glsl, program, 'slice')
-            quad = glsl.slice_quad(lo, hi, int(self.slice_axis), self.slice_offset)
-            draws.append((shader, batch_for_shader(shader, 'TRIS', {'pos': quad.tolist()}),
-                          'ALPHA'))
-        if not draws:
+            parts.append(SimpleNamespace(
+                key=(program.key, 'slice'), fragment=glsl.slice_fragment_source(program),
+                tris=glsl.slice_quad(lo, hi, int(self.slice_axis), self.slice_offset),
+                blend='ALPHA', batch=None, failed=False))
+        if not parts:
             return
 
-        state = {'draws': draws, 'texture': _texture(glsl, program.params, settings)}
+        state = SimpleNamespace(
+            vertex=glsl.VERTEX, parts=parts, texture=None,
+            texture_data=glsl.parameter_texture_data(program.params, settings))
         callback_enable(n_id, {'tree_name': self.id_data.name[:],
                                'custom_function': draw_sdf, 'args': state})
 
