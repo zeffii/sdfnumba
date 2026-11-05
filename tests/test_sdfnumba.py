@@ -139,3 +139,36 @@ def test_param_change_keeps_code():
     c = (sn.sphere(1) & sn.box(1.5)).program()
     assert a.key == b.key
     assert a.key != c.key
+
+
+# --- dual contouring ------------------------------------------------------
+
+@pytest.mark.parametrize('sharp', [False, True])
+def test_csg_closed_both_modes(sharp):
+    f = sn.box(1.5) - sn.sphere(0.4).translate((0.75, 0.75, 0.75))
+    verts, faces = f.generate(samples=2 ** 18, sharp=sharp)
+    assert_closed_manifold(faces)
+    assert signed_volume(verts, faces) > 0
+
+
+def test_dc_hits_box_corners_and_edges():
+    f = sn.box((1.5, 1.2, 1.0))
+    verts, _ = f.generate(samples=2 ** 17, sharp=True)
+    half = np.array([0.75, 0.6, 0.5])
+    for corner in np.array(np.meshgrid(*[(-1, 1)] * 3)).T.reshape(-1, 3) * half:
+        assert np.linalg.norm(verts - corner, axis=1).min() < 1e-6
+    # every vertex lies on the box surface
+    assert np.abs(f(verts)).max() < 1e-6
+
+
+def test_dc_sphere_still_round():
+    verts, faces = sn.sphere(1).generate(samples=2 ** 18, sharp=True)
+    assert_closed_manifold(faces)
+    assert np.abs(np.linalg.norm(verts, axis=1) - 1).max() < 0.005
+
+
+def test_dc_cut_by_bounds_is_capped():
+    verts, faces = sn.box(1.5).generate(bounds=((-1, -1, 0), (1, 1, 1)),
+                                        samples=2 ** 17, sharp=True)
+    assert_closed_manifold(faces)
+    assert signed_volume(verts, faces) > 0

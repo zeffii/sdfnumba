@@ -47,15 +47,17 @@ def timed(fn):
 
 def main():
     print(f'samples {SAMPLES}')
-    print(f'{"shape":16} {"fogleman":>10} {"sdfnumba":>10} {"speedup":>8}')
+    print(f'{"shape":16} {"fogleman":>10} {"sdfnumba":>10} {"speedup":>8} {"sharp":>10}')
     for name, build in SHAPES.items():
         f_sn, f_fg = build(sn), build(fg)
         bounds = sn.estimate_bounds(f_sn.program())
         f_sn.generate(bounds=bounds, samples=2 ** 12)            # warm up
+        f_sn.generate(bounds=bounds, samples=2 ** 12, sharp=True)
         t_fg, _ = timed(lambda: f_fg.generate(bounds=bounds, samples=SAMPLES,
                                               verbose=False))
         t_sn, _ = timed(lambda: f_sn.generate(bounds=bounds, samples=SAMPLES))
-        print(f'{name:16} {t_fg:9.2f}s {t_sn:9.2f}s {t_fg / t_sn:7.1f}x')
+        t_dc, _ = timed(lambda: f_sn.generate(bounds=bounds, samples=SAMPLES, sharp=True))
+        print(f'{name:16} {t_fg:9.2f}s {t_sn:9.2f}s {t_fg / t_sn:7.1f}x {t_dc:9.2f}s')
 
 
 if __name__ == '__main__':

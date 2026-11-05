@@ -7,7 +7,8 @@ joining the four cells around that edge.  Inside is negative.
 The grid's outer layer is forced to "outside", so the mesh is always closed,
 even when the bounds cut through the shape (the cut is capped).
 
-Dual contouring (sharp edges) will replace only the vertex placement step.
+With sharp=True the vertices are placed by dual contouring instead (dc.py);
+the cells and quads are the same, so the mesh is just as closed.
 """
 
 import time
@@ -166,32 +167,45 @@ def _close_boundary(v):
         v[:, :, sl] = np.maximum(v[:, :, sl], eps)
 
 
-def surface_nets(values, origin, step):
-    """Mesh a grid of distances. Returns (verts (n, 3), quads (m, 4))."""
-    verts, index = _place_vertices(values)
+def surface_nets(values, origin, step, program=None):
+    """Mesh a grid of distances. Returns (verts (n, 3), quads (m, 4)).
+    With `program`, vertices are placed by dual contouring (sharp edges)."""
+    if program is None:
+        verts, index = _place_vertices(values)
+    else:
+        from .dc import place_vertices_dc
+        verts, index = place_vertices_dc(values, program, origin, step)
     quads = _make_quads(values, index)
     return verts * np.asarray(step) + np.asarray(origin), quads
 
 
-def triangulate(quads, verts):
-    """Split each quad along its shorter diagonal."""
+def triangulate(quads, verts, program=None):
+    """Split each quad in two.  With `program`, pick the diagonal whose
+    midpoint is closer to the true surface (follows sharp creases);
+    otherwise the shorter diagonal."""
     a, b, c, d = quads.T
     p = verts
-    ac = np.einsum('ij,ij->i', p[a] - p[c], p[a] - p[c])
-    bd = np.einsum('ij,ij->i', p[b] - p[d], p[b] - p[d])
+    if program is None:
+        ac = np.einsum('ij,ij->i', p[a] - p[c], p[a] - p[c])
+        bd = np.einsum('ij,ij->i', p[b] - p[d], p[b] - p[d])
+    else:
+        from .grid import evaluate
+        ac = np.abs(evaluate(program, (p[a] + p[c]) / 2)).ravel()
+        bd = np.abs(evaluate(program, (p[b] + p[d]) / 2)).ravel()
     use_ac = ac <= bd
     t1 = np.where(use_ac[:, None], np.stack([a, b, c], 1), np.stack([a, b, d], 1))
     t2 = np.where(use_ac[:, None], np.stack([a, c, d], 1), np.stack([b, c, d], 1))
     return np.concatenate([t1, t2]).astype(np.int32)
 
 
-def generate(sdf, step=None, bounds=None, samples=SAMPLES, triangles=False,
-             verbose=False):
+def generate(sdf, step=None, bounds=None, samples=SAMPLES, sharp=False,
+             triangles=False, verbose=False):
     """Mesh a shape. Returns (verts float64 (n, 3), faces int32 (m, 4) or (m, 3)).
 
     step     grid spacing (one number or three); default from `samples`
     bounds   ((x0, y0, z0), (x1, y1, z1)); default is estimated
     samples  roughly how many grid points to use when step is not given
+    sharp    dual contouring: keep sharp edges and corners (slower)
     """
     t0 = time.perf_counter()
     program = sdf.program() if hasattr(sdf, 'program') else sdf
@@ -209,9 +223,9 @@ def generate(sdf, step=None, bounds=None, samples=SAMPLES, triangles=False,
 
     values, skipped = sample_grid(program, lo, step, shape)
     _close_boundary(values)
-    verts, faces = surface_nets(values, lo, step)
+    verts, faces = surface_nets(values, lo, step, program if sharp else None)
     if triangles:
-        faces = triangulate(faces, verts)
+        faces = triangulate(faces, verts, program if sharp else None)
 
     if verbose:
         print(f'grid {shape[0]}x{shape[1]}x{shape[2]}, step {step[0]:g}, '
