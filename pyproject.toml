@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sdfnumba"
+version = "0.1.0"
+description = "Fast signed distance fields to closed meshes, using numba"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = ["numpy", "numba"]
+
+[tool.setuptools]
+packages = ["sdfnumba"]
