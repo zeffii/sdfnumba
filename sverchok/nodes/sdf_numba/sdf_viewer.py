@@ -35,18 +35,9 @@ from sverchok.data_structure import node_id, updateNode
 from sverchok.node_tree import SverchCustomTreeNode
 from sverchok.ui.bgl_callback_3dview import callback_disable, callback_enable
 
+from ._common import first_shape, import_sdfnumba
+
 _SHADERS = {}   # (program key, 'shape' | 'slice') -> GPUShader, shared by all viewers
-
-
-def _sdfnumba():
-    """Import sdfnumba on first use (the very first import compiles for a while)."""
-    try:
-        import sdfnumba
-        from sdfnumba import glsl
-    except ImportError as e:
-        raise ImportError('sdfnumba is not installed in Blender\'s Python '
-                          '(see sverchok/README.md in the sdfnumba repo)') from e
-    return sdfnumba, glsl
 
 
 def _build_shader(vertex, fragment):
@@ -238,17 +229,6 @@ class SvSDFViewerNode(SverchCustomTreeNode, bpy.types.Node):
         col.prop(self, 'step_scale')
         col.prop(self, 'padding')
 
-    def _shape(self):
-        """The first sdfnumba shape found on the input, however nested."""
-        stack = [self.inputs['SDF'].sv_get(deepcopy=False, default=[])]
-        while stack:
-            item = stack.pop(0)
-            if hasattr(item, 'program'):
-                return item
-            if isinstance(item, (list, tuple)):
-                stack.extend(item)
-        return None
-
     def process(self):
         if bpy.app.background:
             return
@@ -258,10 +238,11 @@ class SvSDFViewerNode(SverchCustomTreeNode, bpy.types.Node):
             return
         if not self.inputs['SDF'].is_linked:
             return
-        shape = self._shape()
+        shape = first_shape(self.inputs['SDF'])
         if shape is None:
             return
-        sn, glsl = _sdfnumba()
+        sn = import_sdfnumba()
+        from sdfnumba import glsl
 
         program = shape.program()
         lo, hi = sn.estimate_bounds(program)

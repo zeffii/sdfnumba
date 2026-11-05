@@ -11,6 +11,8 @@
    under `- Viz:`:
 
        - SvSDFViewerNode
+       - SvSDFMeshNode
+       - SvSDFRemeshNode
 
 4. Restart Blender (or reload Sverchok).
 
@@ -28,3 +30,10 @@ an SNLite node and connect its `sdf` output to the SDF Viewer.
   seam, crease and outline lines, colour per primitive, and a distance slice.
   Nothing is meshed. If twisted or bent shapes show holes, lower *Step scale*
   in the N-panel.
+- **SDF Mesh** makes a closed mesh (quads, or triangles), smooth or *Sharp*.
+- **SDF Remesh** remeshes that mesh: triangles follow curvature and get finer
+  along creases. Feed it the shape plus SDF Mesh's vertices and polygons.
+
+While values keep changing (a slider being dragged), SDF Mesh outputs a coarse
+mesh and SDF Remesh passes its input through; once nothing has changed for
+*Settle* seconds (N-panel) they build the full result.
