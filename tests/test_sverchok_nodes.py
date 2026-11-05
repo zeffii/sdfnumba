@@ -13,6 +13,7 @@ import pytest
 import sdfnumba as sn
 
 NODE_DIR = os.path.join(os.path.dirname(__file__), '..', 'sverchok', 'nodes', 'sdf_numba')
+UTILS_DIR = os.path.join(os.path.dirname(__file__), '..', 'sverchok', 'utils')
 
 
 # --- stand-ins ------------------------------------------------------------------
@@ -82,7 +83,9 @@ def _install_stubs(timers, clock):
     nt.SverchCustomTreeNode = type('SverchCustomTreeNode', (), {})
     nodes = types.ModuleType('sverchok.nodes')
     nodes.__path__ = []
-    for m in (sv, ds, nt, nodes):
+    utils = types.ModuleType('sverchok.utils')
+    utils.__path__ = [UTILS_DIR]          # where sdfnumba_helper.py is symlinked to
+    for m in (sv, ds, nt, nodes, utils):
         sys.modules[m.__name__] = m
 
     spec = importlib.util.spec_from_file_location(
@@ -91,7 +94,7 @@ def _install_stubs(timers, clock):
     pkg = importlib.util.module_from_spec(spec)
     sys.modules['sverchok.nodes.sdf_numba'] = pkg
     spec.loader.exec_module(pkg)
-    settle = importlib.import_module('sverchok.nodes.sdf_numba._settle')
+    settle = importlib.import_module('sverchok.utils.sdfnumba_helper')
     settle.time = types.SimpleNamespace(monotonic=lambda: clock[0])
     return bpy
 

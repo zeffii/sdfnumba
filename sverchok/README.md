@@ -6,13 +6,20 @@
        install_package(['-e', r"path\to\sdfnumba"])
 
    then restart Blender.
-2. Copy `nodes/sdf_numba/` into `sverchok/nodes/`.
-3. Add the nodes to Sverchok's menu, in `sverchok/menus/full_by_data_type.yaml`,
-   under `- Viz:`:
+2. Link (or copy) into your Sverchok folder:
+   - `nodes/sdf_numba/` → `sverchok/nodes/sdf_numba/`
+   - `utils/sdfnumba_helper.py` → `sverchok/utils/sdfnumba_helper.py`
+3. Add the nodes to Sverchok's menu, in `sverchok/menus/full_by_data_type.yaml`:
+   the viewer under `- Viz:`
 
        - SvSDFViewerNode
-       - SvSDFMeshNode
-       - SvSDFRemeshNode
+
+   and the others in a section of their own, e.g. after `- Viz:`
+
+       - SDF:
+           - icon_name: MESH_ICOSPHERE
+           - SvSDFMeshNode
+           - SvSDFRemeshNode
 
 4. Restart Blender (or reload Sverchok).
 

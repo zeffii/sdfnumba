@@ -5,7 +5,7 @@
 Surface Nets for smooth shapes, or dual contouring (Sharp) to keep edges and
 corners.  While the shape keeps changing (a slider being dragged) the node
 outputs a quick coarse mesh; once it has been still for `Settle` seconds it
-builds the full one (see _settle.py).  The SDF Viewer is the live view; this
+builds the full one (see sdfnumba_helper.py).  The SDF Viewer is the live view; this
 node is for when you want the actual geometry.
 """
 
@@ -15,8 +15,12 @@ from bpy.props import BoolProperty, FloatProperty, IntProperty
 from sverchok.data_structure import updateNode
 from sverchok.node_tree import SverchCustomTreeNode
 
-from . import _settle
-from ._common import first_shape, import_sdfnumba, mesh_outputs, shape_signature
+from sverchok.utils.sdfnumba_helper import first_shape, forget, mesh_outputs, request, shape_signature
+
+try:
+    import sdfnumba as sn      # cheap: sdfnumba loads its parts on first use
+except ImportError:
+    sn = None                  # Sverchok shows the node as needing sdfnumba
 
 PREVIEW_RESOLUTION = 24
 
@@ -38,6 +42,7 @@ class SvSDFMeshNode(SverchCustomTreeNode, bpy.types.Node):
     bl_idname = 'SvSDFMeshNode'
     bl_label = 'SDF Mesh'
     bl_icon = 'MESH_ICOSPHERE'
+    sv_dependencies = {'sdfnumba'}
 
     resolution: IntProperty(
         name='Resolution', default=96, min=8, max=1024, update=updateNode,
@@ -81,7 +86,6 @@ class SvSDFMeshNode(SverchCustomTreeNode, bpy.types.Node):
         shape = first_shape(self.inputs['SDF'])
         if shape is None:
             return
-        sn = import_sdfnumba()
         res, sharp, tris = self.resolution, self.sharp, self.triangles
 
         signature = (shape_signature(shape), res, sharp, tris)
@@ -93,7 +97,7 @@ class SvSDFMeshNode(SverchCustomTreeNode, bpy.types.Node):
         def full():
             return _mesh(sn, shape, res, sharp, tris)
 
-        result = _settle.request(self, signature, quick, full, self.settle)
+        result = request(self, signature, quick, full, self.settle)
         if result is None:
             return
         verts, edges, polys = result
@@ -102,7 +106,7 @@ class SvSDFMeshNode(SverchCustomTreeNode, bpy.types.Node):
         self.outputs['Polygons'].sv_set(polys)
 
     def sv_free(self):
-        _settle.forget(self)
+        forget(self)
 
 
 classes = [SvSDFMeshNode]

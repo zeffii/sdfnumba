@@ -35,7 +35,12 @@ from sverchok.data_structure import node_id, updateNode
 from sverchok.node_tree import SverchCustomTreeNode
 from sverchok.ui.bgl_callback_3dview import callback_disable, callback_enable
 
-from ._common import first_shape, import_sdfnumba
+from sverchok.utils.sdfnumba_helper import first_shape
+
+try:
+    import sdfnumba as sn      # cheap: sdfnumba loads its parts on first use
+except ImportError:
+    sn = None                  # Sverchok shows the node as needing sdfnumba
 
 _SHADERS = {}   # (program key, 'shape' | 'slice') -> GPUShader, shared by all viewers
 
@@ -140,6 +145,7 @@ class SvSDFViewerNode(SverchCustomTreeNode, bpy.types.Node):
     bl_idname = 'SvSDFViewerNode'
     bl_label = 'SDF Viewer'
     bl_icon = 'SHADING_RENDERED'
+    sv_dependencies = {'sdfnumba'}
 
     activate: BoolProperty(name='Show', default=True, update=updateNode)
     show_shape: BoolProperty(name='Shape', default=True, update=updateNode)
@@ -241,7 +247,6 @@ class SvSDFViewerNode(SverchCustomTreeNode, bpy.types.Node):
         shape = first_shape(self.inputs['SDF'])
         if shape is None:
             return
-        sn = import_sdfnumba()
         from sdfnumba import glsl
 
         program = shape.program()

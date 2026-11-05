@@ -6,7 +6,7 @@ along creases (optional) and grow gradually away from them.
 
 Takes the shape and a closed mesh of it (normally from SDF Mesh).  While the
 inputs keep changing it passes the input mesh through untouched; once they
-have been still for `Settle` seconds it remeshes (see _settle.py).
+have been still for `Settle` seconds it remeshes (see sdfnumba_helper.py).
 """
 
 import bpy
@@ -15,10 +15,14 @@ from bpy.props import BoolProperty, FloatProperty, IntProperty
 from sverchok.data_structure import updateNode
 from sverchok.node_tree import SverchCustomTreeNode
 
-from . import _settle
-from ._common import faces_array, first_shape, import_sdfnumba, mesh_outputs, shape_signature
-
 import numpy as np
+
+from sverchok.utils.sdfnumba_helper import faces_array, first_shape, forget, mesh_outputs, request, shape_signature
+
+try:
+    import sdfnumba as sn      # cheap: sdfnumba loads its parts on first use
+except ImportError:
+    sn = None                  # Sverchok shows the node as needing sdfnumba
 
 
 class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
@@ -29,6 +33,7 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
     bl_idname = 'SvSDFRemeshNode'
     bl_label = 'SDF Remesh'
     bl_icon = 'MOD_REMESH'
+    sv_dependencies = {'sdfnumba'}
 
     max_len: FloatProperty(
         name='Edge length', default=0.0, min=0.0, update=updateNode,
@@ -89,7 +94,6 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         polys = inputs['Polygons'].sv_get(deepcopy=False, default=[[]])[0]
         if shape is None or not len(verts) or not len(polys):
             return
-        sn = import_sdfnumba()
         V = np.array(verts, dtype=np.float64).reshape(-1, 3)
         F = faces_array(polys)
 
@@ -110,7 +114,7 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
                                                          min_len=max_len / detail))
             return mesh_outputs(out_v, out_f)
 
-        result = _settle.request(self, signature, quick, full, self.settle)
+        result = request(self, signature, quick, full, self.settle)
         if result is None:
             return
         out_v, out_e, out_p = result
@@ -119,7 +123,7 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         self.outputs['Polygons'].sv_set(out_p)
 
     def sv_free(self):
-        _settle.forget(self)
+        forget(self)
 
 
 classes = [SvSDFRemeshNode]
