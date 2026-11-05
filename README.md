@@ -12,10 +12,14 @@ from it; his copyright notice is retained in LICENSE.
 ## Install
     pip install -e .
 
-**First use is slow.** numba compiles everything the first time it runs
-(around 15–30 s, once per machine). The result is cached in
-`~/.cache/sdfnumba` and numba's own cache, so later sessions start instantly.
-Installing a new version triggers one more compile.
+**First use is slow.** numba compiles everything the first time
+`sdfnumba` is imported (around 25 s, once per machine). The result is cached
+in `~/.cache/sdfnumba` and numba's own cache, so later sessions start
+instantly. Installing a new version triggers one more compile.
+
+Each new shape structure also gets its own compiled code, built in a
+background process in a second or two; until it is ready the shape runs on
+a slower interpreter. Changing only parameter values never recompiles.
 
 ## Sverchok
 Copy `sverchok/nodes/sdf_numba/` into `sverchok/nodes/`

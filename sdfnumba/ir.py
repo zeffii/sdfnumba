@@ -6,8 +6,11 @@ itself through an Emitter.  The result is a Program:
     code     int64 (n, 2)   (opcode, param offset) per instruction
     params   float64 (m,)   all parameter values
     key      bytes          identifies the code alone, so two trees that only
-                            differ in parameter values share a key (and, later,
-                            a compiled kernel)
+                            differ in parameter values share a key (and a
+                            compiled kernel, see codegen.py)
+
+`program.run` / `program.run_id` are the best functions available for it:
+its generated code once compiled, the interpreter until then.
 """
 
 import numpy as np
@@ -44,6 +47,29 @@ class Program:
             self.params = np.zeros(1)
         self.key = self.code.tobytes()
         _check_depth(self.code)
+        # run_id reports a primitive by its row in `code`; this numbers the
+        # primitives 0, 1, 2 ... in the order the shape built them
+        prims = np.array([ops.REGISTRY_BY_CODE[c].kind == ops.PRIM
+                          if c >= ops.FIRST_OP_CODE else False for c in self.code[:, 0]])
+        self.prim_number = np.full(len(self.code), -1, dtype=np.int64)
+        self.prim_number[prims] = np.arange(prims.sum())
+
+    @property
+    def run(self):
+        from .codegen import functions
+        return functions(self)[0]
+
+    @property
+    def run_id(self):
+        from .codegen import functions
+        return functions(self)[1]
+
+    def compile(self):
+        """Compile this shape's generated code now (it otherwise compiles in
+        the background on first use) and wait for it."""
+        from .codegen import compile
+        compile(self)
+        return self
 
 
 def compile_tree(node):

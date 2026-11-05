@@ -11,14 +11,16 @@ import math
 import numpy as np
 from numba import njit, prange
 
-from .interp import run, STACK_DEPTH
+from .interp import STACK_DEPTH
+from .sigs import FN, FN_ID, A1, A2, A2i, A3f, A1i, i64, f64
+from numba import types
 
 CHUNK = 4096
 BLOCK = 8
 
 
-@njit(parallel=True, cache=True)
-def _eval_points(code, P, pts, out):
+@njit(types.void(FN, A2i, A1, A2, A1), parallel=True, cache=True)
+def _eval_points(run, code, P, pts, out):
     n = pts.shape[0]
     nchunks = (n + CHUNK - 1) // CHUNK
     for c in prange(nchunks):
@@ -29,16 +31,43 @@ def _eval_points(code, P, pts, out):
             out[i] = run(code, P, pts[i, 0], pts[i, 1], pts[i, 2], ps, ds, aux)
 
 
+@njit(types.void(FN_ID, A2i, A1, A2, A1i), parallel=True, cache=True)
+def _eval_ids(run_id, code, P, pts, out):
+    n = pts.shape[0]
+    nchunks = (n + CHUNK - 1) // CHUNK
+    for c in prange(nchunks):
+        ps = np.empty((STACK_DEPTH, 3))
+        ds = np.empty(STACK_DEPTH)
+        aux = np.empty(STACK_DEPTH)
+        ids = np.empty(STACK_DEPTH, dtype=np.int64)
+        for i in range(c * CHUNK, min(n, (c + 1) * CHUNK)):
+            out[i] = run_id(code, P, pts[i, 0], pts[i, 1], pts[i, 2], ps, ds, aux, ids)
+
+
+def _points(points):
+    return np.ascontiguousarray(points, dtype=np.float64).reshape(-1, 3)
+
+
 def evaluate(program, points):
     """Distances at an (n, 3) array of points, as an (n, 1) array."""
-    pts = np.ascontiguousarray(points, dtype=np.float64).reshape(-1, 3)
+    pts = _points(points)
     out = np.empty(len(pts))
-    _eval_points(program.code, program.params, pts, out)
+    _eval_points(program.run, program.code, program.params, pts, out)
     return out.reshape(-1, 1)
 
 
-@njit(parallel=True, cache=True)
-def _sample_grid(code, P, origin, step, nx, ny, nz, block, out):
+def primitive_ids(program, points):
+    """For each point, which primitive the surface there belongs to: the
+    index of the primitive in the shape (0, 1, 2 ... in the order they were
+    built).  Where it changes across a surface there is a boolean seam."""
+    pts = _points(points)
+    out = np.empty(len(pts), dtype=np.int64)
+    _eval_ids(program.run_id, program.code, program.params, pts, out)
+    return program.prim_number[out]
+
+
+@njit(i64(FN, A2i, A1, A1, A1, i64, i64, i64, i64, A3f), parallel=True, cache=True)
+def _sample_grid(run, code, P, origin, step, nx, ny, nz, block, out):
     bx = (nx + block - 1) // block
     by = (ny + block - 1) // block
     bz = (nz + block - 1) // block
@@ -84,7 +113,7 @@ def sample_grid(program, origin, step, shape, block=BLOCK):
     Returns (values float32 (nx, ny, nz), number of skipped blocks)."""
     nx, ny, nz = (int(n) for n in shape)
     out = np.empty((nx, ny, nz), dtype=np.float32)
-    skipped = _sample_grid(program.code, program.params,
+    skipped = _sample_grid(program.run, program.code, program.params,
                            np.asarray(origin, dtype=np.float64),
                            np.asarray(step, dtype=np.float64),
                            nx, ny, nz, block, out)

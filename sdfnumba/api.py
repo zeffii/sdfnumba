@@ -49,6 +49,18 @@ class SDF:
         from .grid import evaluate
         return evaluate(self.program(), points)
 
+    def ids(self, points):
+        """Which primitive (0, 1, 2 ... in build order) the surface nearest
+        each point belongs to; boolean seams are where it changes."""
+        from .grid import primitive_ids
+        return primitive_ids(self.program(), points)
+
+    def compile(self):
+        """Compile this shape's generated code now and wait for it.  Without
+        this it compiles in the background on first use."""
+        self.program().compile()
+        return self
+
     def __or__(self, other):
         return union(self, other)
 

@@ -29,22 +29,30 @@ FIRST_OP_CODE = 2
 
 
 class Op:
-    def __init__(self, name, kind, nparams, fn, code):
+    def __init__(self, name, kind, nparams, fn, code, winner=None):
         self.name = name
         self.kind = kind
         self.nparams = nparams
         self.fn = fn
         self.code = code
+        self.winner = winner   # DBINARY only: name of f(d1, d2, P, o) -> True if d1's side won
 
 
-REGISTRY = {}   # name -> Op, in definition order
+REGISTRY = {}          # name -> Op, in definition order
+REGISTRY_BY_CODE = {}  # opcode -> Op
 
 
-def op(kind, nparams):
+def op(kind, nparams, winner=None):
+    """Register an op.  Binary ops also name a `winner` function, which says
+    whether the first or second operand decided the result at that point;
+    that is how each point knows which primitive it belongs to (used for
+    crease detection and, in the viewer, colouring)."""
     def decorate(py_fn):
         fn = njit(cache=True, fastmath=True)(py_fn)
         code = FIRST_OP_CODE + len(REGISTRY)
-        REGISTRY[py_fn.__name__] = Op(py_fn.__name__, kind, nparams, fn, code)
+        REGISTRY[py_fn.__name__] = Op(py_fn.__name__, kind, nparams, fn, code,
+                                      winner.__name__ if winner is not None else None)
+        REGISTRY_BY_CODE[code] = REGISTRY[py_fn.__name__]
         return fn
     return decorate
 
@@ -313,7 +321,27 @@ def add_aux(d, a, P, o):
 
 # --- combiners (k = 0 means hard) --------------------------------------
 
-@op(DBINARY, 1)
+@njit(cache=True, fastmath=True)
+def first_if_smaller(d1, d2, P, o):
+    return d1 <= d2
+
+
+@njit(cache=True, fastmath=True)
+def first_if_larger(d1, d2, P, o):
+    return d1 >= d2
+
+
+@njit(cache=True, fastmath=True)
+def first_if_not_cut(d1, d2, P, o):
+    return d1 >= -d2
+
+
+@njit(cache=True, fastmath=True)
+def first_if_heavier(d1, d2, P, o):
+    return P[o] <= 0.5
+
+
+@op(DBINARY, 1, winner=first_if_smaller)
 def union(d1, d2, P, o):
     k = P[o]
     if k == 0.0:
@@ -322,7 +350,7 @@ def union(d1, d2, P, o):
     return d2 + (d1 - d2) * h - k * h * (1.0 - h)
 
 
-@op(DBINARY, 1)
+@op(DBINARY, 1, winner=first_if_not_cut)
 def difference(d1, d2, P, o):
     k = P[o]
     if k == 0.0:
@@ -331,7 +359,7 @@ def difference(d1, d2, P, o):
     return d1 + (-d2 - d1) * h + k * h * (1.0 - h)
 
 
-@op(DBINARY, 1)
+@op(DBINARY, 1, winner=first_if_larger)
 def intersection(d1, d2, P, o):
     k = P[o]
     if k == 0.0:
@@ -340,7 +368,7 @@ def intersection(d1, d2, P, o):
     return d2 + (d1 - d2) * h + k * h * (1.0 - h)
 
 
-@op(DBINARY, 1)
+@op(DBINARY, 1, winner=first_if_heavier)
 def blend(d1, d2, P, o):
     k = P[o]
     return k * d2 + (1.0 - k) * d1

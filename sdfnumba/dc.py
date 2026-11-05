@@ -22,8 +22,11 @@ import math
 import numpy as np
 from numba import njit, prange
 
-from .interp import run, STACK_DEPTH
+from numba import types
+
+from .interp import STACK_DEPTH
 from .mesh import CORNERS, EDGES, _cell_mask
+from .sigs import FN, A1, A2, A2i, A3f, A3i32
 
 REFINE_STEPS = 4
 EIGEN_CUTOFF = 0.1   # eigenvalues below this fraction of the largest are dropped
@@ -60,13 +63,9 @@ def _jacobi_eigen(A, V, w):
         w[k] = A[k, k]
 
 
-@njit(cache=True, fastmath=True)
-def _sdf(code, P, x, y, z, ps, ds, aux):
-    return run(code, P, x, y, z, ps, ds, aux)
-
-
-@njit(parallel=True, cache=True, fastmath=True)
-def _place_vertices_dc(v, code, P, origin, step):
+@njit(types.Tuple((A2, A3i32))(FN, A3f, A2i, A1, A1, A1),
+      parallel=True, cache=True, fastmath=True)
+def _place_vertices_dc(run, v, code, P, origin, step):
     nx, ny, nz = v.shape
     cx, cy, cz = nx - 1, ny - 1, nz - 1
     index = np.full((cx, cy, cz), -1, dtype=np.int32)
@@ -123,7 +122,7 @@ def _place_vertices_dc(v, code, P, origin, step):
                         # false position on the exact SDF
                         ta, tb, fa, fb = 0.0, 1.0, float(da), float(db)
                         for _ in range(REFINE_STEPS):
-                            f = _sdf(code, P, ox + ax + t * (bx - ax), oy + ay + t * (by - ay),
+                            f = run(code, P, ox + ax + t * (bx - ax), oy + ay + t * (by - ay),
                                      oz + az + t * (bz - az), ps, ds, aux)
                             if (f < 0.0) == (fa < 0.0):
                                 ta, fa = t, f
@@ -142,12 +141,12 @@ def _place_vertices_dc(v, code, P, origin, step):
                     if edge_cell:
                         continue
                     wx, wy, wz = ox + px, oy + py, oz + pz
-                    gx = (_sdf(code, P, wx + h, wy, wz, ps, ds, aux) -
-                          _sdf(code, P, wx - h, wy, wz, ps, ds, aux))
-                    gy = (_sdf(code, P, wx, wy + h, wz, ps, ds, aux) -
-                          _sdf(code, P, wx, wy - h, wz, ps, ds, aux))
-                    gz = (_sdf(code, P, wx, wy, wz + h, ps, ds, aux) -
-                          _sdf(code, P, wx, wy, wz - h, ps, ds, aux))
+                    gx = (run(code, P, wx + h, wy, wz, ps, ds, aux) -
+                          run(code, P, wx - h, wy, wz, ps, ds, aux))
+                    gy = (run(code, P, wx, wy + h, wz, ps, ds, aux) -
+                          run(code, P, wx, wy - h, wz, ps, ds, aux))
+                    gz = (run(code, P, wx, wy, wz + h, ps, ds, aux) -
+                          run(code, P, wx, wy, wz - h, ps, ds, aux))
                     gl = math.sqrt(gx * gx + gy * gy + gz * gz)
                     if gl == 0.0:
                         continue
@@ -198,6 +197,6 @@ def _place_vertices_dc(v, code, P, origin, step):
 
 
 def place_vertices_dc(values, program, origin, step):
-    return _place_vertices_dc(values, program.code, program.params,
+    return _place_vertices_dc(program.run, values, program.code, program.params,
                               np.asarray(origin, dtype=np.float64),
                               np.asarray(step, dtype=np.float64))

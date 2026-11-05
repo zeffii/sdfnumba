@@ -22,14 +22,55 @@ import math
 import numpy as np
 from numba import njit, prange
 
-from .interp import run, STACK_DEPTH
+from numba import types
+
+from .interp import STACK_DEPTH
 from .dc import _jacobi_eigen
+from .sigs import FN, FN_ID, A1, A2, A2i, A1i, A1b, f64, i64, b1
+
+
+# --- per-edge tests, evaluated only for edges an operation is considering ----
+
+SEAM_COS_NB = math.cos(math.radians(5.0))
+
+@njit(cache=True, fastmath=True)
+def _face_grad(run, run_id, code, P, V, F, f, h, ps, ds, aux, idstack):
+    """Unit SDF gradient at a face's centre, and the primitive there."""
+    a, b, c = F[f, 0], F[f, 1], F[f, 2]
+    x = (V[a, 0] + V[b, 0] + V[c, 0]) / 3.0
+    y = (V[a, 1] + V[b, 1] + V[c, 1]) / 3.0
+    z = (V[a, 2] + V[b, 2] + V[c, 2]) / 3.0
+    gx = run(code, P, x + h, y, z, ps, ds, aux) - run(code, P, x - h, y, z, ps, ds, aux)
+    gy = run(code, P, x, y + h, z, ps, ds, aux) - run(code, P, x, y - h, z, ps, ds, aux)
+    gz = run(code, P, x, y, z + h, ps, ds, aux) - run(code, P, x, y, z - h, ps, ds, aux)
+    gl = math.sqrt(gx * gx + gy * gy + gz * gz) + 1e-300
+    pid = run_id(code, P, x, y, z, ps, ds, aux, idstack)
+    return gx / gl, gy / gl, gz / gl, pid
+
+
+@njit(cache=True, fastmath=True)
+def _is_crease_edge(run, run_id, code, P, V, F, a, b, f0, f1, vcrease, h, crease_cos,
+                    ps, ds, aux, idstack):
+    """Both ends on a crease, and across the edge the SDF normal turns sharply
+    (or two primitives meet at a slight angle, see _crease_info)."""
+    if crease_cos < -1.5 or vcrease[a] == 0 or vcrease[b] == 0:
+        return False
+    n0 = _face_grad(run, run_id, code, P, V, F, f0, h, ps, ds, aux, idstack)
+    n1 = _face_grad(run, run_id, code, P, V, F, f1, h, ps, ds, aux, idstack)
+    cos = n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]
+    return cos < crease_cos or (n0[3] != n1[3] and cos < SEAM_COS_NB)
+
+
+@njit(cache=True, fastmath=True)
+def _mid_dist(run, code, P, V, a, b, ps, ds, aux):
+    return abs(run(code, P, 0.5 * (V[a, 0] + V[b, 0]), 0.5 * (V[a, 1] + V[b, 1]),
+                   0.5 * (V[a, 2] + V[b, 2]), ps, ds, aux))
 
 
 # --- SDF queries ---------------------------------------------------------
 
-@njit(parallel=True, cache=True, fastmath=True)
-def _project(code, P, V, mask, h, steps):
+@njit(types.void(FN, A2i, A1, A2, A1b, f64, i64), parallel=True, cache=True, fastmath=True)
+def _project(run, code, P, V, mask, h, steps):
     """Newton steps onto the zero level: p -= d * g / |g|^2."""
     for i in prange(V.shape[0]):
         if not mask[i]:
@@ -52,8 +93,9 @@ def _project(code, P, V, mask, h, steps):
         V[i, 0], V[i, 1], V[i, 2] = x, y, z
 
 
-@njit(parallel=True, cache=True, fastmath=True)
-def _project_features(code, P, V, F, vf_start, vf, mask, rank, h, steps):
+@njit(types.void(FN, A2i, A1, A2, A2i, A1i, A1i, A1b, A1i, f64, i64),
+      parallel=True, cache=True, fastmath=True)
+def _project_features(run, code, P, V, F, vf_start, vf, mask, rank, h, steps):
     """Snap vertices onto creases and corners.
 
     Each face around the vertex gives a sample point a little way into that
@@ -128,8 +170,8 @@ def _project_features(code, P, V, F, vf_start, vf, mask, rank, h, steps):
             V[i, 0], V[i, 1], V[i, 2] = x + mx, y + my, z + mz
 
 
-@njit(parallel=True, cache=True, fastmath=True)
-def _curvature(code, P, V, h):
+@njit(A1(FN, A2i, A1, A2, f64), parallel=True, cache=True, fastmath=True)
+def _curvature(run, code, P, V, h):
     """Largest absolute principal curvature at each vertex, from the SDF's
     Hessian restricted to the tangent plane.  `h` sets the scale it sees."""
     n = V.shape[0]
@@ -293,37 +335,42 @@ class Mesh:
             raise ValueError('remesh needs a closed manifold mesh')
 
 
-@njit(parallel=True, cache=True, fastmath=True)
-def _face_normals_sdf(code, P, V, F, h):
-    """Unit SDF gradient at each face centre.  Unlike the face's own normal,
-    this cannot be thrown off by a badly shaped triangle."""
+@njit(types.Tuple((A2, A1i))(FN, FN_ID, A2i, A1, A2, A2i, f64),
+      parallel=True, cache=True, fastmath=True)
+def _face_normals_sdf(run, run_id, code, P, V, F, h):
+    """Unit SDF gradient at each face centre (unlike the face's own normal,
+    a badly shaped triangle can't throw it off), and which primitive the
+    surface there belongs to."""
     m = F.shape[0]
     out = np.empty((m, 3))
+    ids = np.empty(m, dtype=np.int64)
     for f in prange(m):
         ps = np.empty((STACK_DEPTH, 3))
         ds = np.empty(STACK_DEPTH)
         aux = np.empty(STACK_DEPTH)
-        a, b, c = F[f, 0], F[f, 1], F[f, 2]
-        x = (V[a, 0] + V[b, 0] + V[c, 0]) / 3.0
-        y = (V[a, 1] + V[b, 1] + V[c, 1]) / 3.0
-        z = (V[a, 2] + V[b, 2] + V[c, 2]) / 3.0
-        gx = run(code, P, x + h, y, z, ps, ds, aux) - run(code, P, x - h, y, z, ps, ds, aux)
-        gy = run(code, P, x, y + h, z, ps, ds, aux) - run(code, P, x, y - h, z, ps, ds, aux)
-        gz = run(code, P, x, y, z + h, ps, ds, aux) - run(code, P, x, y, z - h, ps, ds, aux)
-        gl = math.sqrt(gx * gx + gy * gy + gz * gz) + 1e-300
-        out[f, 0], out[f, 1], out[f, 2] = gx / gl, gy / gl, gz / gl
-    return out
+        idstack = np.empty(STACK_DEPTH, dtype=np.int64)
+        gx, gy, gz, pid = _face_grad(run, run_id, code, P, V, F, f, h, ps, ds, aux, idstack)
+        out[f, 0], out[f, 1], out[f, 2] = gx, gy, gz
+        ids[f] = pid
+    return out, ids
+
+
+SEAM_COS = math.cos(math.radians(5.0))
 
 
 def _crease_info(mesh, crease_cos, program, h):
-    """Crease edges (the SDF's normal turns sharply across them), and per
-    vertex the number of crease edges through it.  crease_cos=None: no creases."""
+    """Crease edges, and per vertex the number of crease edges through it.
+    An edge is a crease where the SDF's normal turns sharply across it, or
+    where two different primitives meet at even a slight angle (a boolean
+    seam).  crease_cos=None: no creases."""
     n_e = len(mesh.E)
     if crease_cos is None:
         return np.zeros(n_e, dtype=bool), np.zeros(len(mesh.V), dtype=np.int64)
-    nrm = _face_normals_sdf(program.code, program.params, mesh.V, mesh.F, h)
-    cos = np.einsum('ij,ij->i', nrm[mesh.E[:, 2]], nrm[mesh.E[:, 3]])
-    crease = cos < crease_cos
+    nrm, ids = _face_normals_sdf(program.run, program.run_id, program.code,
+                                 program.params, mesh.V, mesh.F, h)
+    f0, f1 = mesh.E[:, 2], mesh.E[:, 3]
+    cos = np.einsum('ij,ij->i', nrm[f0], nrm[f1])
+    crease = (cos < crease_cos) | ((ids[f0] != ids[f1]) & (cos < SEAM_COS))
     count = np.bincount(mesh.E[crease][:, :2].ravel(), minlength=len(mesh.V))
     return crease, count
 
@@ -333,7 +380,7 @@ def _crease_info(mesh, crease_cos, program, h):
 def _sizing(mesh, program, min_len, max_len, tolerance, crease_len, crease_count,
             gradation):
     V = mesh.V
-    kappa = _curvature(program.code, program.params, V, 0.1 * min_len)
+    kappa = _curvature(program.run, program.code, program.params, V, 0.1 * min_len)
     eps = tolerance
     with np.errstate(divide='ignore', invalid='ignore'):
         L = np.sqrt(np.maximum(6 * eps / kappa - 3 * eps * eps, 0.0))
@@ -353,41 +400,11 @@ def _sizing(mesh, program, min_len, max_len, tolerance, crease_len, crease_count
     return L
 
 
-# --- per-edge tests, evaluated only for edges an operation is considering ----
-
-@njit(cache=True, fastmath=True)
-def _face_grad(code, P, V, F, f, h, ps, ds, aux):
-    a, b, c = F[f, 0], F[f, 1], F[f, 2]
-    x = (V[a, 0] + V[b, 0] + V[c, 0]) / 3.0
-    y = (V[a, 1] + V[b, 1] + V[c, 1]) / 3.0
-    z = (V[a, 2] + V[b, 2] + V[c, 2]) / 3.0
-    gx = run(code, P, x + h, y, z, ps, ds, aux) - run(code, P, x - h, y, z, ps, ds, aux)
-    gy = run(code, P, x, y + h, z, ps, ds, aux) - run(code, P, x, y - h, z, ps, ds, aux)
-    gz = run(code, P, x, y, z + h, ps, ds, aux) - run(code, P, x, y, z - h, ps, ds, aux)
-    gl = math.sqrt(gx * gx + gy * gy + gz * gz) + 1e-300
-    return gx / gl, gy / gl, gz / gl
-
-
-@njit(cache=True, fastmath=True)
-def _is_crease_edge(code, P, V, F, a, b, f0, f1, vcrease, h, crease_cos, ps, ds, aux):
-    """Both ends on a crease, and the SDF normal turns sharply across the edge."""
-    if crease_cos < -1.5 or vcrease[a] == 0 or vcrease[b] == 0:
-        return False
-    n0 = _face_grad(code, P, V, F, f0, h, ps, ds, aux)
-    n1 = _face_grad(code, P, V, F, f1, h, ps, ds, aux)
-    return n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] < crease_cos
-
-
-@njit(cache=True, fastmath=True)
-def _mid_dist(code, P, V, a, b, ps, ds, aux):
-    return abs(run(code, P, 0.5 * (V[a, 0] + V[b, 0]), 0.5 * (V[a, 1] + V[b, 1]),
-                   0.5 * (V[a, 2] + V[b, 2]), ps, ds, aux))
-
-
 # --- topology batches ----------------------------------------------------------
 
-@njit(cache=True)
-def _split_batch(code, P, V, F, nv, nf, E, L, lock, vcrease, h, crease_cos):
+@njit(types.UniTuple(i64, 3)(FN, FN_ID, A2i, A1, A2, A2i, i64, i64, A2i, A1, A1b, A1i,
+                              f64, f64), cache=True)
+def _split_batch(run, run_id, code, P, V, F, nv, nf, E, L, lock, vcrease, h, crease_cos):
     """Split long edges.  An edge's two faces must be untouched this batch
     (`lock` is per face).  New vertices are appended at V[nv...], new faces
     at F[nf...]; a new vertex splitting a crease edge, or an edge that cuts
@@ -396,6 +413,7 @@ def _split_batch(code, P, V, F, nv, nf, E, L, lock, vcrease, h, crease_cos):
     ps = np.empty((STACK_DEPTH, 3))
     ds = np.empty(STACK_DEPTH)
     aux = np.empty(STACK_DEPTH)
+    idstack = np.empty(STACK_DEPTH, dtype=np.int64)
     splits = 0
     for e in range(E.shape[0]):
         a, b, f0, f1, c, d = E[e, 0], E[e, 1], E[e, 2], E[e, 3], E[e, 4], E[e, 5]
@@ -409,8 +427,9 @@ def _split_batch(code, P, V, F, nv, nf, E, L, lock, vcrease, h, crease_cos):
         if len2 <= (4.0 / 3.0 * target) ** 2:
             continue
         on_crease = crease_cos > -1.5 and (
-            _mid_dist(code, P, V, a, b, ps, ds, aux) > 0.02 * math.sqrt(len2) or
-            _is_crease_edge(code, P, V, F, a, b, f0, f1, vcrease, h, crease_cos, ps, ds, aux))
+            _mid_dist(run, code, P, V, a, b, ps, ds, aux) > 0.02 * math.sqrt(len2) or
+            _is_crease_edge(run, run_id, code, P, V, F, a, b, f0, f1, vcrease, h, crease_cos, ps, ds, aux,
+                           idstack))
         m = nv
         V[m, 0] = 0.5 * (V[a, 0] + V[b, 0])
         V[m, 1] = 0.5 * (V[a, 1] + V[b, 1])
@@ -430,13 +449,15 @@ def _split_batch(code, P, V, F, nv, nf, E, L, lock, vcrease, h, crease_cos):
     return nv, nf, splits
 
 
-@njit(cache=True)
-def _collapse_batch(code, P, V, F, E, L, valence, vf_start, vf, lock, alive, stamp,
-                    vcrease, h, crease_cos):
+@njit(i64(FN, FN_ID, A2i, A1, A2, A2i, A2i, A1, A1i, A1i, A1i, A1b, A1b, A1i, A1i,
+          f64, f64), cache=True)
+def _collapse_batch(run, run_id, code, P, V, F, E, L, valence, vf_start, vf, lock, alive,
+                    stamp, vcrease, h, crease_cos):
     """Collapse short edges, b into a.  Faces f0, f1 die; b is left unused."""
     ps = np.empty((STACK_DEPTH, 3))
     ds = np.empty(STACK_DEPTH)
     aux = np.empty(STACK_DEPTH)
+    idstack = np.empty(STACK_DEPTH, dtype=np.int64)
     collapses = 0
     tick = 0
     for e in range(E.shape[0]):
@@ -456,7 +477,8 @@ def _collapse_batch(code, P, V, F, E, L, valence, vf_start, vf, lock, alive, sta
         ka, kb = vcrease[a], vcrease[b]
         tiny = dx * dx + dy * dy + dz * dz < (1e-6 * target) ** 2
         if not tiny and ka > 0 and kb > 0 and not _is_crease_edge(
-                code, P, V, F, a, b, f0, f1, vcrease, h, crease_cos, ps, ds, aux):
+                run, run_id, code, P, V, F, a, b, f0, f1, vcrease, h, crease_cos, ps, ds, aux,
+                idstack):
             continue
         if not tiny and kb > 2 and ka > 2:
             continue
@@ -538,8 +560,9 @@ def _collapse_batch(code, P, V, F, E, L, valence, vf_start, vf, lock, alive, sta
     return collapses
 
 
-@njit(cache=True)
-def _flip_batch(code, P, V, F, E, valence, vf_start, vf, lock, vcrease, h,
+@njit(i64(FN, FN_ID, A2i, A1, A2, A2i, A2i, A1i, A1i, A1i, A1b, A1i, f64, f64, b1),
+      cache=True)
+def _flip_batch(run, run_id, code, P, V, F, E, valence, vf_start, vf, lock, vcrease, h,
                 crease_cos, features_only):
     """Flip edges.  mid_ab / mid_cd are |SDF| at the midpoints of the edge and
     of the other diagonal: an edge that cuts across a crease has a midpoint
@@ -548,6 +571,7 @@ def _flip_batch(code, P, V, F, E, valence, vf_start, vf, lock, vcrease, h,
     ps = np.empty((STACK_DEPTH, 3))
     ds = np.empty(STACK_DEPTH)
     aux = np.empty(STACK_DEPTH)
+    idstack = np.empty(STACK_DEPTH, dtype=np.int64)
     flips = 0
     for e in range(E.shape[0]):
         a, b, f0, f1, c, d = E[e, 0], E[e, 1], E[e, 2], E[e, 3], E[e, 4], E[e, 5]
@@ -560,14 +584,14 @@ def _flip_batch(code, P, V, F, E, valence, vf_start, vf, lock, vcrease, h,
         if crease_cos < -1.5:
             mid_ab = mid_cd = 0.0
         else:
-            mid_ab = _mid_dist(code, P, V, a, b, ps, ds, aux)
-            mid_cd = _mid_dist(code, P, V, c, d, ps, ds, aux)
+            mid_ab = _mid_dist(run, code, P, V, a, b, ps, ds, aux)
+            mid_cd = _mid_dist(run, code, P, V, c, d, ps, ds, aux)
         cuts = mid_ab > 0.02 * length
         if cuts and mid_cd < 0.5 * mid_ab:
             pass                      # feature flip: the other diagonal fits better
         elif features_only:
             continue
-        elif _is_crease_edge(code, P, V, F, a, b, f0, f1, vcrease, h, crease_cos, ps, ds, aux):
+        elif _is_crease_edge(run, run_id, code, P, V, F, a, b, f0, f1, vcrease, h, crease_cos, ps, ds, aux, idstack):
             continue
         else:
             before = ((valence[a] - 6) ** 2 + (valence[b] - 6) ** 2 +
@@ -666,12 +690,13 @@ def _relax(V, F, vf_start, vf, crease_count, E, crease_e, out):
 
 # --- driver ----------------------------------------------------------------------
 
-def _flips(code, P, V, F, vcrease, h, ccos, features_only, passes):
+def _flips(program, V, F, vcrease, h, ccos, features_only, passes):
     for _ in range(passes):
         mesh = Mesh(V, F)
         lock = np.zeros(len(V), dtype=bool)
-        done = _flip_batch(code, P, V, F, mesh.E, mesh.valence, mesh.vf_start,
-                           mesh.vf, lock, vcrease, h, ccos, features_only)
+        done = _flip_batch(program.run, program.run_id, program.code, program.params,
+                           V, F, mesh.E, mesh.valence, mesh.vf_start, mesh.vf, lock,
+                           vcrease, h, ccos, features_only)
         if done == 0:
             break
 
@@ -719,6 +744,7 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
     crease_cos = math.cos(math.radians(crease_angle)) if creases else None
     h_grad = 1e-4 * min_len
     code, P = program.code, program.params
+    run, run_id = program.run, program.run_id
 
     ccos = crease_cos if crease_cos is not None else -2.0   # -2: no creases
     for _ in range(iterations):
@@ -730,7 +756,7 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
                     vcrease, gradation)
 
         # turn edges that cut across creases (the input may have some)
-        _flips(code, P, V, F, vcrease, h_grad, ccos, True, 3)
+        _flips(program, V, F, vcrease, h_grad, ccos, True, 3)
 
         # split until nothing is too long
         for _ in range(8):
@@ -741,16 +767,16 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
             Lb = np.empty(len(V) + ne); Lb[:len(V)] = L
             cb = np.zeros(len(V) + ne, dtype=np.int64); cb[:len(V)] = vcrease
             lock = np.zeros(len(F), dtype=bool)
-            nv, nf, done = _split_batch(code, P, Vb, Fb, len(V), len(F), mesh.E, Lb,
-                                        lock, cb, h_grad, ccos)
+            nv, nf, done = _split_batch(run, run_id, code, P, Vb, Fb, len(V), len(F),
+                                        mesh.E, Lb, lock, cb, h_grad, ccos)
             new = np.zeros(nv, dtype=bool); new[len(V):] = True
             V, F, L, vcrease = Vb[:nv], Fb[:nf], Lb[:nv], cb[:nv]
             if project and done:
-                _project(code, P, V, new & (vcrease == 0), h_grad, 3)
+                _project(run, code, P, V, new & (vcrease == 0), h_grad, 3)
                 snap = new & (vcrease > 0)
                 if snap.any():
                     m2 = Mesh(V, F)
-                    _project_features(code, P, V, F, m2.vf_start, m2.vf, snap,
+                    _project_features(run, code, P, V, F, m2.vf_start, m2.vf, snap,
                                       np.full(len(V), 2), h_grad, 3)
             if done == 0:
                 break
@@ -761,7 +787,7 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
             lock = np.zeros(len(V), dtype=bool)
             alive = np.ones(len(F), dtype=bool)
             stamp = np.zeros(len(V), dtype=np.int64)
-            done = _collapse_batch(code, P, V, F, mesh.E, L, mesh.valence,
+            done = _collapse_batch(run, run_id, code, P, V, F, mesh.E, L, mesh.valence,
                                    mesh.vf_start, mesh.vf, lock, alive, stamp,
                                    vcrease, h_grad, ccos)
             F = F[alive]
@@ -770,7 +796,7 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
                 break
 
         # flip towards valence 6, and turn any edge that cuts a crease
-        _flips(code, P, V, F, vcrease, h_grad, ccos, False, 3)
+        _flips(program, V, F, vcrease, h_grad, ccos, False, 3)
 
         # relax and project (crease edges looked up afresh for the sliding)
         mesh = Mesh(V, F)
@@ -780,9 +806,9 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
         V = target
         if project:
             on_crease = vcrease > 0
-            _project(code, P, V, ~on_crease, h_grad, 3)
+            _project(run, code, P, V, ~on_crease, h_grad, 3)
             rank = np.where(vcrease > 2, 3, 2)
-            _project_features(code, P, V, F, mesh.vf_start, mesh.vf, on_crease, rank,
+            _project_features(run, code, P, V, F, mesh.vf_start, mesh.vf, on_crease, rank,
                               h_grad, 3)
 
     return V, F.astype(np.int32)

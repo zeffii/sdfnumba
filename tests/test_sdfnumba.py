@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import pytest
 
@@ -228,3 +230,52 @@ def test_remesh_csg():
     euler = len(V) - len(T) * 3 // 2 + len(T)
     assert euler == 2 - 2 * 5
     assert np.abs(f(V)).max() < 1e-3
+
+
+# --- generated code and primitive ids ---------------------------------------
+
+from sdfnumba import codegen, interp
+from sdfnumba.grid import _eval_points, _eval_ids
+
+
+@pytest.mark.parametrize('name', CASES)
+def test_generated_matches_interpreter(name):
+    prog = CASES[name](sn).program()
+    run, run_id = codegen.compile(prog)
+    a, b = np.empty(len(POINTS)), np.empty(len(POINTS))
+    _eval_points(interp.run, prog.code, prog.params, POINTS, a)
+    _eval_points(run, prog.code, prog.params, POINTS, b)
+    np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-12)
+    ia, ib = np.empty(len(POINTS), np.int64), np.empty(len(POINTS), np.int64)
+    _eval_ids(interp.run_id, prog.code, prog.params, POINTS, ia)
+    _eval_ids(run_id, prog.code, prog.params, POINTS, ib)
+    np.testing.assert_array_equal(ia, ib)
+
+
+def test_param_change_reuses_generated_code():
+    a = (sn.sphere(1) | sn.box(1.5).k(0.2)).program()
+    b = (sn.sphere(0.5) | sn.box(0.7).k(0.1)).program()
+    assert codegen.compile(a) == codegen.compile(b)
+
+
+def test_background_compile_takes_over():
+    # a structure no other test builds, so it starts uncompiled
+    f = sn.torus(1, 0.2).twist(0.3).translate((0.1, 0.2, 0.3)).shell(0.05)
+    prog = f.program()
+    first = prog.run
+    deadline = time.time() + 120
+    while not codegen.ready(prog) and time.time() < deadline:
+        time.sleep(0.2)
+    assert codegen.ready(prog)
+    assert prog.run is not interp.run
+    if first is interp.run:       # it really started on the interpreter
+        np.testing.assert_allclose(f(POINTS[:100]).ravel(),
+                                   sn.evaluate(prog, POINTS[:100]).ravel())
+
+
+def test_primitive_ids():
+    f = sn.sphere(1) | sn.box(1).translate((2, 0, 0)) | sn.torus(1, 0.2).translate((0, 3, 0))
+    ids = f.ids([(0, 0, 0.9), (2, 0, 0.4), (1, 3, 0), (-0.9, 0, 0)])
+    assert list(ids) == [0, 1, 2, 0]
+    g = sn.box(1.5) - sn.sphere(1)
+    assert list(g.ids([(0.75, 0.1, 0.1), (0.75, 0.74, 0.74)])) == [1, 0]
