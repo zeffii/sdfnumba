@@ -2,6 +2,7 @@
 
 Fast signed distance fields → closed meshes, using numba.
 Dual contouring for sharp edges, Surface Nets for smooth.
+Optional adaptive remeshing that keeps creases.
 
 ## Acknowledgement
 Built on the ideas and API of Michael Fogleman's

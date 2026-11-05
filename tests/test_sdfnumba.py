@@ -172,3 +172,59 @@ def test_dc_cut_by_bounds_is_capped():
                                         samples=2 ** 17, sharp=True)
     assert_closed_manifold(faces)
     assert signed_volume(verts, faces) > 0
+
+
+# --- remeshing --------------------------------------------------------------
+
+def edge_lengths(verts, tris):
+    e = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    return np.linalg.norm(verts[e[:, 0]] - verts[e[:, 1]], axis=1)
+
+
+def test_remesh_sphere_matches_sizing():
+    f = sn.sphere(1)
+    verts, faces = f.generate(samples=2 ** 15)
+    V, T = sn.remesh(f, verts, faces, max_len=0.1)
+    assert_closed_manifold(T)
+    assert np.abs(f(V)).max() < 1e-9
+    # curvature 1 never asks for less than max_len here, so edges ~ max_len
+    assert 0.07 < np.median(edge_lengths(V, T)) < 0.11
+
+
+@pytest.mark.parametrize('creases', [True, False])
+def test_remesh_box(creases):
+    f = sn.box(1.5)
+    verts, faces = f.generate(samples=2 ** 15, sharp=True)
+    V, T = sn.remesh(f, verts, faces, creases=creases)
+    assert_closed_manifold(T)
+    assert np.abs(f(V)).max() < 1e-9
+    vol = signed_volume(V, T)
+    if creases:
+        assert abs(vol - 1.5 ** 3) < 1e-6          # edges and corners kept exactly
+    else:
+        assert 0.98 * 1.5 ** 3 < vol < 1.5 ** 3   # slightly rounded
+
+
+def test_remesh_finer_along_creases():
+    f = sn.box(1.5)
+    verts, faces = f.generate(samples=2 ** 15, sharp=True)
+    V, T = sn.remesh(f, verts, faces, max_len=0.12, crease_len=0.03)
+    # edges on the box's 12 edges vs edges in the middle of the faces
+    e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    mid = 0.5 * (V[e[:, 0]] + V[e[:, 1]])
+    near_edge = (np.abs(np.abs(mid) - 0.75) < 1e-6).sum(1) >= 2
+    centre = (np.abs(mid) < 0.4).sum(1) >= 2
+    L = np.linalg.norm(V[e[:, 0]] - V[e[:, 1]], axis=1)
+    assert np.median(L[near_edge]) < 0.5 * np.median(L[centre])
+
+
+def test_remesh_csg():
+    f = sn.sphere(1) & sn.box(1.5)
+    c = sn.cylinder(0.5)
+    f -= c.orient(sn.X) | c.orient(sn.Y) | c
+    verts, faces = f.generate(samples=2 ** 16, sharp=True)
+    V, T = sn.remesh(f, verts, faces)
+    assert_closed_manifold(T)
+    euler = len(V) - len(T) * 3 // 2 + len(T)
+    assert euler == 2 - 2 * 5
+    assert np.abs(f(V)).max() < 1e-3
