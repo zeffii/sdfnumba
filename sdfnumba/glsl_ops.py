@@ -159,3 +159,41 @@ WINNERS = {
     'first_if_not_cut': 'return d1 >= -d2;',
     'first_if_heavier': 'return PRM(o) <= 0.5;',
 }
+
+# --- edge margins, for anti-aliased contour lines in the viewer
+#
+# A margin is zero exactly on an edge and grows away from it; the viewer
+# divides it by its screen-space rate of change to get a distance in pixels.
+#
+# Hard booleans: how close the op was to picking the other side.  Smooth ones
+# (k > 0) blend without an edge, so they report none (1e30).
+#     float s_NAME(float d1, float d2, int o)
+SEAM_MARGINS = {
+    'union': 'return (PRM(o) == 0.0) ? abs(d1 - d2) : 1e30;',
+    'intersection': 'return (PRM(o) == 0.0) ? abs(d1 - d2) : 1e30;',
+    'difference': 'return (PRM(o) == 0.0) ? abs(d1 + d2) : 1e30;',
+    'blend': 'return 1e30;',
+}
+
+# A primitive's own sharp edges, where it has them.  Primitives not listed
+# are smooth (or their edges are left to the optional shading-based test).
+#     float e_NAME(vec3 p, int o)
+EDGE_MARGINS = {
+    'box': '''
+        vec3 q = abs(p) - 0.5 * PRM3(o);
+        // an edge is where the largest two components of q are equal
+        float a = max(q.x, max(q.y, q.z));
+        float b = (a == q.x) ? max(q.y, q.z) : ((a == q.y) ? max(q.x, q.z) : max(q.x, q.y));
+        return a - b;''',
+    'capped_cylinder': '''
+        vec3 a = PRM3(o), b = PRM3(o + 3);
+        vec3 ba = b - a, pa = p - a;
+        float baba = dot(ba, ba), paba = dot(pa, ba);
+        float x = length(pa * baba - ba * paba) - PRM(o + 6) * baba;
+        float y = abs(paba - baba * 0.5) - baba * 0.5;
+        return abs(x - y);''',
+    'tetrahedron': '''
+        float s = abs(p.x + p.y) - p.z, t = abs(p.x - p.y) + p.z;
+        return min(abs(s - t), (s >= t) ? abs(p.x + p.y) : abs(p.x - p.y));''',
+    'octahedron': 'return min(abs(p.x), min(abs(p.y), abs(p.z)));',
+}

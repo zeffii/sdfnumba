@@ -169,12 +169,19 @@ class SvSDFViewerNode(SverchCustomTreeNode, bpy.types.Node):
     show_creases: BoolProperty(
         name='Creases', default=True, update=updateNode,
         description='Lines where the surface turns sharply')
+    shading_creases: BoolProperty(
+        name='Creases from shading', default=False, update=updateNode,
+        description='Also look for creases where the shading turns sharply, for edges '
+                    'no primitive reports (twisted or bent shapes); lines are rougher')
     crease_threshold: FloatProperty(
         name='Crease', default=0.35, min=0.01, max=2.0, update=updateNode,
-        description='How sharply the surface must turn (per pixel) to draw a crease line')
+        description='For creases from shading: how sharply the surface must turn (per pixel)')
+    smooth_edges: BoolProperty(
+        name='Smooth edges', default=True, update=updateNode,
+        description='Anti-alias the silhouette with 4 rays per edge pixel')
     show_outline: BoolProperty(name='Outline', default=True, update=updateNode)
-    line_width: FloatProperty(name='Outline width', default=1.5, min=0.5, max=8,
-                              update=updateNode)
+    line_width: FloatProperty(name='Line width', default=1.5, min=0.5, max=8,
+                              update=updateNode, description='Width of all lines, in pixels')
 
     show_slice: BoolProperty(
         name='Slice', default=False, update=updateNode,
@@ -222,8 +229,11 @@ class SvSDFViewerNode(SverchCustomTreeNode, bpy.types.Node):
     def draw_buttons_ext(self, context, layout):
         self.draw_buttons(context, layout)
         col = layout.column(align=True)
-        col.prop(self, 'crease_threshold')
         col.prop(self, 'line_width')
+        col.prop(self, 'smooth_edges')
+        col.prop(self, 'shading_creases')
+        if self.shading_creases:
+            col.prop(self, 'crease_threshold')
         col.prop(self, 'max_steps')
         col.prop(self, 'step_scale')
         col.prop(self, 'padding')
@@ -266,6 +276,8 @@ class SvSDFViewerNode(SverchCustomTreeNode, bpy.types.Node):
             color_by_primitive=float(self.color_by_primitive),
             show_seams=float(self.show_seams), show_creases=float(self.show_creases),
             crease_threshold=self.crease_threshold,
+            shading_creases=float(self.shading_creases),
+            smooth_edges=float(self.smooth_edges),
             show_outline=float(self.show_outline), line_width=self.line_width,
             max_steps=float(self.max_steps), step_scale=self.step_scale,
             slice_axis=float(self.slice_axis), slice_offset=self.slice_offset,
@@ -275,7 +287,7 @@ class SvSDFViewerNode(SverchCustomTreeNode, bpy.types.Node):
         if self.show_shape:
             parts.append(SimpleNamespace(
                 key=(program.key, 'shape'), fragment=glsl.fragment_source(program),
-                tris=glsl.box_triangles(lo, hi), blend='NONE', batch=None, failed=False))
+                tris=glsl.box_triangles(lo, hi), blend='ALPHA', batch=None, failed=False))
         if self.show_slice:
             parts.append(SimpleNamespace(
                 key=(program.key, 'slice'), fragment=glsl.slice_fragment_source(program),

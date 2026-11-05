@@ -28,7 +28,7 @@ the offscreen tests:
 import numpy as np
 
 from . import ops
-from .glsl_ops import HELPERS, OPS, WINNERS
+from .glsl_ops import HELPERS, OPS, WINNERS, SEAM_MARGINS, EDGE_MARGINS
 from .ops import PRIM, XFORM, XFORM_AUX, DUNARY, DUNARY_AUX, DBINARY, PUSHP, POPP
 
 # --- the op library ------------------------------------------------------------
@@ -56,6 +56,11 @@ def library(used=None):
     out = [HELPERS]
     for name, body in WINNERS.items():
         out.append(f'bool {name}(float d1, float d2, int o) {{ {body.strip()} }}')
+    for name, body in SEAM_MARGINS.items():
+        out.append(f'float s_{name}(float d1, float d2, int o) {{ {body.strip()} }}')
+    for name, body in EDGE_MARGINS.items():
+        if used is None or name in used:
+            out.append(f'float e_{name}(vec3 p, int o) {{\n    {body.strip()}\n}}')
     for op in ops.REGISTRY.values():
         if used is not None and op.name not in used:
             continue
@@ -64,7 +69,10 @@ def library(used=None):
     return '\n\n'.join(out) + '\n'
 
 
-def _body(code, with_ids):
+def _body(code, with_ids, with_edges=False):
+    """GLSL statements for one program.  with_ids: return the winning
+    primitive.  with_edges: return vec2(seam margin, primitive edge margin)
+    carried along the winning branch of every boolean."""
     lines = []
     pt = dt = at = 0
     declared = set()
@@ -91,6 +99,9 @@ def _body(code, with_ids):
             lines.append(f'{var("float", f"d{dt}")} = {f}(p, {o});')
             if with_ids:
                 lines.append(f'{var("int", f"i{dt}")} = {i};')
+            if with_edges:
+                edge = f'e_{op.name}(p, {o})' if op.name in EDGE_MARGINS else '1e30'
+                lines.append(f'{var("vec2", f"m{dt}")} = vec2(1e30, {edge});')
             dt += 1
         elif op.kind == XFORM:
             lines.append(f'p = {f}(p, {o});')
@@ -109,13 +120,20 @@ def _body(code, with_ids):
             a, b = dt - 1, dt
             if with_ids:
                 lines.append(f'if (!{op.winner}(d{a}, d{b}, {o})) i{a} = i{b};')
+            if with_edges:
+                lines.append(f'if (!{op.winner}(d{a}, d{b}, {o})) m{a} = m{b};')
+                lines.append(f'm{a}.x = min(m{a}.x, s_{op.name}(d{a}, d{b}, {o}));')
             lines.append(f'd{a} = {f}(d{a}, d{b}, {o});')
-    lines.append('return i0;' if with_ids else 'return d0;')
+    if with_edges:
+        lines.append('return m0;')
+    else:
+        lines.append('return i0;' if with_ids else 'return d0;')
     return lines
 
 
 def shape_source(program):
-    """`sdf` and `sdf_id` for this program, plus the op functions it uses."""
+    """`sdf`, `sdf_id` and `sdf_edges` for this program, plus the op
+    functions it uses."""
     used = {ops.REGISTRY_BY_CODE[int(c)].name for c in program.code[:, 0]
             if int(c) >= ops.FIRST_OP_CODE}
     out = [library(used),
@@ -124,6 +142,9 @@ def shape_source(program):
            '}', '',
            'int sdf_id(vec3 p) {',
            *[f'    {s}' for s in _body(program.code, True)],
+           '}', '',
+           'vec2 sdf_edges(vec3 p) {',
+           *[f'    {s}' for s in _body(program.code, False, True)],
            '}', '']
     return '\n'.join(out)
 
@@ -139,9 +160,11 @@ SETTINGS = [
     ('color_by_primitive', 0.0),
     ('show_seams', 1.0),
     ('show_creases', 1.0),
-    ('crease_threshold', 0.35),     # change in unit normal per pixel
+    ('shading_creases', 0.0),       # also find creases from the shading (fallback)
+    ('crease_threshold', 0.35),     # for that: change in unit normal per pixel
     ('show_outline', 1.0),
-    ('line_width', 1.5),            # pixels (outline)
+    ('line_width', 1.5),            # pixels, for all lines
+    ('smooth_edges', 1.0),          # anti-alias the silhouette (4 rays per edge pixel)
     ('max_steps', 160.0),
     ('step_scale', 1.0),            # < 1 for shapes that bend or twist space
     ('slice_axis', 2.0),            # 0, 1, 2 = x, y, z
@@ -216,6 +239,17 @@ vec4 to_framebuffer(vec4 c) {
 '''
 
 FRAGMENT_MAIN = '''
+float pixels_to_edge(float m) {
+    // margin divided by its change per pixel = distance to the edge in pixels
+    float g = length(vec2(dFdx(m), dFdy(m)));
+    if (m >= 1e29 || g <= 0.0) return 1e30;
+    return m / g;
+}
+
+float line_at(float px) {
+    return 1.0 - smoothstep(0.5 * LINE_WIDTH - 0.5, 0.5 * LINE_WIDTH + 0.5, px);
+}
+
 float pixel_size(float t) {
     // world size of one pixel at distance t along the ray
     return (cam.w > 0.5) ? view_dir.w * t : view_dir.w;
@@ -234,6 +268,37 @@ vec3 primitive_color(int id) {
     return mix(vec3(0.85), c, 0.45);
 }
 
+bool march(vec3 ro, vec3 rd, vec3 lo, vec3 hi,
+           out float t, out float closest, out float t_closest) {
+    // only march where the ray is inside the box around the shape
+    vec3 inv = 1.0 / rd;
+    vec3 ta = (lo - ro) * inv, tb = (hi - ro) * inv;
+    vec3 tmin = min(ta, tb), tmax = max(ta, tb);
+    float t0 = max(max(max(tmin.x, tmin.y), tmin.z), 0.0);
+    float t1 = min(min(tmax.x, tmax.y), tmax.z);
+    t = t0;
+    closest = 1e30;      // nearest miss, in pixels
+    t_closest = t0;
+    int steps = int(MAX_STEPS);
+    for (int i = 0; i < steps; i++) {
+        if (t > t1) break;
+        float d = sdf(ro + rd * t);
+        float px = pixel_size(t);
+        if (d < 0.5 * px) return true;
+        if (d / px < closest) { closest = d / px; t_closest = t; }
+        t += d * STEP_SCALE;
+    }
+    return false;
+}
+
+vec3 shade(vec3 p, vec3 n, vec3 rd, int id) {
+    vec3 base = (COLOR_BY_PRIMITIVE > 0.5) ? primitive_color(id) : BASE_COLOR;
+    // headlight plus a little sky, so shapes read without scene lights
+    float key = max(dot(n, -rd), 0.0);
+    float sky = 0.5 + 0.5 * n.z;
+    return base * (0.25 + 0.6 * key + 0.15 * sky) + 0.12 * pow(1.0 - key, 3.0);
+}
+
 void main() {
     vec3 ro, rd;
     vec3 lo = BOX_LO, hi = BOX_HI;
@@ -244,60 +309,80 @@ void main() {
         rd = normalize(view_dir.xyz);
         ro = world_pos - rd * 2.0 * length(hi - lo);
     }
-    // where the ray is inside the box
-    vec3 inv = 1.0 / rd;
-    vec3 ta = (lo - ro) * inv, tb = (hi - ro) * inv;
-    vec3 tmin = min(ta, tb), tmax = max(ta, tb);
-    float t0 = max(max(max(tmin.x, tmin.y), tmin.z), 0.0);
-    float t1 = min(min(tmax.x, tmax.y), tmax.z);
+    float t, closest, t_closest;
+    bool hit = march(ro, rd, lo, hi, t, closest, t_closest);
 
-    float t = t0;
-    bool hit = false;
-    float closest = 1e30;        // nearest miss, in pixels
-    float t_closest = t0;
-    int steps = int(MAX_STEPS);
-    for (int i = 0; i < steps; i++) {
-        if (t > t1) break;
-        float d = sdf(ro + rd * t);
-        float px = pixel_size(t);
-        if (d < 0.5 * px) { hit = true; break; }
-        if (d / px < closest) { closest = d / px; t_closest = t; }
-        t += d * STEP_SCALE;
-    }
-
-    // everything below runs for every pixel, so screen-space derivatives
-    // (used for the lines) are well defined at the edges between pixels
+    // everything below until the edge samples runs for every pixel, so the
+    // screen-space derivatives used for lines and edges are well defined
+    vec3 dxo = dFdx(ro), dyo = dFdy(ro), dxd = dFdx(rd), dyd = dFdy(rd);
+    float hitf = hit ? 1.0 : 0.0;
     float t_end = hit ? t : t_closest;
     vec3 p = ro + rd * t_end;
     float px = pixel_size(t_end);
     vec3 n = sdf_normal(p, max(px, 1e-6));
     int id = sdf_id(p);
 
-    // a seam is where the winning primitive changes *and* the surface
-    // actually turns (smooth blends change primitive without a crease)
-    float turn = length(fwidth(n));
-    float seam = (SHOW_SEAMS > 0.5 && fwidth(float(id)) > 0.0)
-               ? smoothstep(0.03, 0.08, turn) : 0.0;
-    float crease = (SHOW_CREASES > 0.5)
-                 ? smoothstep(CREASE_THRESHOLD, 1.6 * CREASE_THRESHOLD, turn) : 0.0;
-
-    if (!hit) {
-        if (SHOW_OUTLINE > 0.5 && closest < LINE_WIDTH) {
-            FragColor = to_framebuffer(vec4(LINE_COLOR, 1.0));
-        } else {
-            discard;
-        }
-    } else {
-        vec3 base = (COLOR_BY_PRIMITIVE > 0.5) ? primitive_color(id) : BASE_COLOR;
-        // headlight plus a little sky, so shapes read without scene lights
-        float key = max(dot(n, -rd), 0.0);
-        float sky = 0.5 + 0.5 * n.z;
-        vec3 col = base * (0.25 + 0.6 * key + 0.15 * sky);
-        col += 0.12 * pow(1.0 - key, 3.0);
-        col = mix(col, LINE_COLOR, max(seam, crease));
-        FragColor = to_framebuffer(vec4(col, 1.0));
+    // lines from edge margins: margin / (its change per pixel) = distance
+    // to the edge in pixels, which gives smooth lines of a fixed width
+    vec2 m = sdf_edges(p);
+    float to_seam = pixels_to_edge(m.x), to_crease = pixels_to_edge(m.y);
+    float to_rim = pixels_to_edge(max(dot(n, -rd), 0.0));
+    float seam = (SHOW_SEAMS > 0.5) ? line_at(to_seam) : 0.0;
+    float crease = (SHOW_CREASES > 0.5) ? line_at(to_crease) : 0.0;
+    if (SHOW_CREASES > 0.5 && SHADING_CREASES > 0.5) {
+        // fallback for edges no primitive reports: where the shading turns
+        float turn = length(fwidth(n));
+        crease = max(crease, smoothstep(CREASE_THRESHOLD, 2.0 * CREASE_THRESHOLD, turn));
     }
-    vec4 clip = ViewProjection * vec4(p, 1.0);
+    // inner half of the outline: n.v falls to zero at a smooth silhouette
+    float rim = (SHOW_OUTLINE > 0.5) ? line_at(to_rim) : 0.0;
+    // a pixel the silhouette may cross: hit/miss differs within its 2x2
+    // block, a missed ray came within a pixel, or an edge of the shape (which
+    // is where sharp silhouettes are) lies within a pixel or so
+    bool edge = fwidth(hitf) > 0.0 || (!hit && closest < 1.5) ||
+                (hit && min(to_rim, min(to_seam, to_crease)) < 1.5);
+
+    // how much of the pixel the shape covers: 4 sub-pixel rays, but only on
+    // the silhouette, which is a small part of the screen
+    float cover = hitf;
+    vec3 p_shape = p;
+    if (edge && SMOOTH_EDGES > 0.5) {
+        const vec2 offs[4] = vec2[4](vec2(-0.125, -0.375), vec2(0.375, -0.125),
+                                     vec2(0.125, 0.375), vec2(-0.375, 0.125));
+        int hits = 0;
+        bool found = hit;
+        for (int k = 0; k < 4; k++) {
+            vec3 o2 = ro + dxo * offs[k].x + dyo * offs[k].y;
+            vec3 d2 = normalize(rd + dxd * offs[k].x + dyd * offs[k].y);
+            float tk, ck, tck;
+            if (march(o2, d2, lo, hi, tk, ck, tck)) {
+                hits++;
+                if (!found) { p_shape = o2 + d2 * tk; found = true; }
+            }
+        }
+        cover = float(hits) / 4.0;
+    }
+    // the outline fills the background part of pixels near the silhouette
+    float outline = 0.0;
+    if (SHOW_OUTLINE > 0.5) {
+        outline = hit ? (edge ? 1.0 : 0.0)
+                      : 1.0 - smoothstep(LINE_WIDTH - 1.0, LINE_WIDTH, closest);
+    }
+    float alpha = cover + (1.0 - cover) * outline;
+    if (alpha <= 0.0) discard;
+
+    vec3 col;
+    if (hit) {
+        col = shade(p, n, rd, id);
+        col = mix(col, LINE_COLOR, max(max(seam, crease), rim));
+    } else {
+        // a missed pixel the shape still partly covers: shade a sample that hit
+        col = shade(p_shape, sdf_normal(p_shape, max(px, 1e-6)), rd, sdf_id(p_shape));
+        if (SHOW_OUTLINE > 0.5) col = LINE_COLOR;
+    }
+    col = (cover * col + (1.0 - cover) * outline * LINE_COLOR) / alpha;
+    FragColor = to_framebuffer(vec4(col, alpha));
+    vec4 clip = ViewProjection * vec4(cover > 0.0 ? p_shape : p, 1.0);
     gl_FragDepth = 0.5 + 0.5 * clip.z / clip.w;
 }
 '''

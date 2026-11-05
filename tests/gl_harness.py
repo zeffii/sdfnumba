@@ -127,6 +127,8 @@ def render(ctx, program, bounds, size=(320, 240), eye=(2.6, -3.2, 2.2), slice_=F
     fbo.use()
     fbo.clear(0.92, 0.92, 0.9, 1.0, depth=1.0)
     ctx.enable(moderngl.DEPTH_TEST)
+    ctx.enable(moderngl.BLEND)
+    ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
     _param_texture(ctx, program, settings).use(0)
     prog['prm_tex'] = 0
     prog['ViewProjection'].write(vp.T.astype('f4').tobytes())
