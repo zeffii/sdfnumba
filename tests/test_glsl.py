@@ -5,7 +5,9 @@ import pytest
 
 import sdfnumba as sn
 from sdfnumba import glsl, ops
-from test_sdfnumba import CASES, POINTS
+from test_sdfnumba import CASES, POINTS, lamp_shade
+
+GLSL_CASES = dict(CASES, lamp_shade=lambda m: lamp_shade())
 
 import gl_harness
 
@@ -19,9 +21,9 @@ def test_every_op_has_glsl():
 
 
 @needs_gl
-@pytest.mark.parametrize('name', CASES)
+@pytest.mark.parametrize('name', GLSL_CASES)
 def test_glsl_matches_numba(name):
-    f = CASES[name](sn)
+    f = GLSL_CASES[name](sn)
     prog = f.program()
     d, ids = gl_harness.evaluate(CTX, prog, POINTS)
     np.testing.assert_allclose(d, f(POINTS).ravel(), rtol=2e-4, atol=2e-4)

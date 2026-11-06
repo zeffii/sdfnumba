@@ -279,3 +279,43 @@ def test_primitive_ids():
     assert list(ids) == [0, 1, 2, 0]
     g = sn.box(1.5) - sn.sphere(1)
     assert list(g.ids([(0.75, 0.1, 0.1), (0.75, 0.74, 0.74)])) == [1, 0]
+
+
+# --- 2D profiles and revolve -----------------------------------------------
+
+def lamp_shade():
+    """spomso's lamp shade example: an arc revolved into a thin shell."""
+    profile = sn.arc(1, np.pi, np.pi + 0.7 * np.pi / 2).translate((1.2, 0, 0))
+    return profile.rotate(np.pi / 10, sn.Z).revolve().dilate(0.02).translate((0, 0, 0.3))
+
+
+def test_arc_distance():
+    a = sn.arc(1, 0, np.pi / 2)
+    d = a(np.array([[1, 0, 0], [0, 2, 0], [0.5, 0.5, 5], [-1, 0, 0], [0, -1, 0]])).ravel()
+    np.testing.assert_allclose(d, [0, 1, 1 - np.sqrt(0.5), np.sqrt(2), np.sqrt(2)], atol=1e-12)
+
+
+def test_revolve_of_circle_is_torus():
+    pts = RNG.uniform(-2, 2, (2000, 3))
+    ring = sn.arc(0.3, -np.pi, np.pi).translate((1, 0, 0)).revolve()
+    torus = sn.torus(1, 0.3)
+    np.testing.assert_allclose(np.abs(ring(pts)), np.abs(torus(pts)), atol=1e-12)
+
+
+def test_lamp_shade_matches_spomso():
+    spomso_geom = pytest.importorskip('spomso.cores.geom_2d')
+    shade = spomso_geom.Arc(1, np.pi, np.pi + 0.7 * np.pi / 2)
+    shade.axis_revolution(1 + 0.2, -np.pi / 10)
+    shade.rounding(0.02)
+    shade.rotate(np.pi / 10, (0, 0, 1))
+    shade.rotate(np.pi / 2, (1, 0, 0))
+    shade.move((0, 0, 0.3))
+    pts = RNG.uniform([-1.1, -1.1, -0.6], [1.1, 1.1, 0.6], (3000, 3))
+    np.testing.assert_allclose(lamp_shade()(pts).ravel(), shade.create(pts.T.copy()),
+                               atol=1e-12)
+
+
+def test_lamp_shade_mesh_is_closed():
+    verts, faces = lamp_shade().generate(samples=2 ** 18)
+    assert_closed_manifold(faces)
+    assert signed_volume(verts, faces) > 0

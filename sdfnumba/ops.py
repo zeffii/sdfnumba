@@ -213,6 +213,22 @@ def octahedron(x, y, z, P, o):
     return (abs(x) + abs(y) + abs(z) - P[o]) * 0.5773502691896258
 
 
+# --- 2D profiles: use x and y only; give them depth with revolve -------
+
+@op(PRIM, 3)
+def arc(x, y, z, P, o):
+    # radius, start angle, end angle (radians, from the x axis); a curve with
+    # no thickness, so give it some with dilate()
+    r, a0, a1 = P[o], P[o + 1], P[o + 2]
+    c = 0.5 * (a0 + a1)
+    half = abs(a1 - c)
+    # rotate so the arc is centred on the x axis, then fold onto y >= 0
+    qx = math.cos(c) * x + math.sin(c) * y
+    qy = abs(-math.sin(c) * x + math.cos(c) * y)
+    psi = _clamp(math.atan2(qy, qx), 0.0, half)
+    return math.hypot(qx - r * math.cos(psi), qy - r * math.sin(psi))
+
+
 # --- point transforms --------------------------------------------------
 
 @op(XFORM, 3)
@@ -280,6 +296,13 @@ def polar_fold(x, y, z, P, o):
     d = math.hypot(x, y)
     a = math.atan2(y, x) % da - shift * da
     return math.cos(a) * d, math.sin(a) * d, z
+
+
+@op(XFORM, 1)
+def revolve(x, y, z, P, o):
+    # spin a 2D profile around the z axis: the profile's x becomes the
+    # distance from the axis (minus the offset), its y becomes height
+    return math.hypot(x, y) - P[o], z, 0.0
 
 
 @op(XFORM_AUX, 3)

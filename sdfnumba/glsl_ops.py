@@ -92,6 +92,15 @@ OPS = {
     'octahedron': '''
         return (abs(p.x) + abs(p.y) + abs(p.z) - PRM(o)) * 0.5773502691896258;''',
 
+    # --- 2D profiles
+    'arc': '''
+        float r = PRM(o), a0 = PRM(o + 1), a1 = PRM(o + 2);
+        float c = 0.5 * (a0 + a1), span = abs(a1 - c);   // `half` is reserved in GLSL
+        float qx = cos(c) * p.x + sin(c) * p.y;
+        float qy = abs(-sin(c) * p.x + cos(c) * p.y);
+        float psi = clamp(atan(qy, qx), 0.0, span);
+        return length(vec2(qx - r * cos(psi), qy - r * sin(psi)));''',
+
     # --- point transforms
     'translate': 'return p - PRM3(o);',
     'scale_point': 'return p / PRM3(o);',
@@ -120,6 +129,7 @@ OPS = {
         float d = length(p.xy);
         float a = mod(atan(p.y, p.x), da) - shift * da;
         return vec3(cos(a) * d, sin(a) * d, p.z);''',
+    'revolve': 'return vec3(length(p.xy) - PRM(o), p.z, 0.0);',
     'elongate': '''
         vec3 q = abs(p) - PRM3(o);
         float w = min(max(q.x, max(q.y, q.z)), 0.0);

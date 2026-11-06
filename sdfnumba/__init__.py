@@ -6,6 +6,7 @@ keeps Blender's startup quick when Sverchok imports the node modules.
 """
 
 import importlib
+import importlib.util
 import types
 
 __version__ = '0.1.0'
@@ -54,16 +55,17 @@ def _load():
 def __getattr__(name):
     if name.startswith('__') and name != '__all__':
         raise AttributeError(name)
+    # a submodule (sdfnumba.ops, sdfnumba.codegen ...) loads directly; going
+    # through _load() here would make `from . import ops` circular.  Exported
+    # functions win over submodules of the same name (remesh)
+    exported = any(name in names for names in _EXPORTS.values())
+    if not exported and importlib.util.find_spec(f'{__name__}.{name}') is not None:
+        return importlib.import_module(f'.{name}', __name__)
     _load()
     if name == '__all__':
         return _ALL
     if name in globals():
         return globals()[name]
-    try:                                     # a submodule: sdfnumba.codegen etc.
-        return importlib.import_module(f'.{name}', __name__)
-    except ModuleNotFoundError as e:
-        if e.name != f'{__name__}.{name}':
-            raise
     raise AttributeError(f"module 'sdfnumba' has no attribute '{name}'")
 
 

@@ -222,6 +222,14 @@ def octahedron(r):
     return Prim('octahedron', r)
 
 
+# --- 2D profiles (x and y only; see revolve) -------------------------------
+
+def arc(radius, start_angle, end_angle):
+    """A circular arc in the xy plane, angles in radians from the x axis.
+    It has no thickness: use .dilate(t) for a wall of 2t."""
+    return Prim('arc', radius, start_angle, end_angle)
+
+
 # --- booleans and distance modifiers ------------------------------------
 
 def _combine(name, a, bs, k):
@@ -329,6 +337,13 @@ def elongate(other, size):
     return Transform(other, [('elongate', _vec3(size))], [('add_aux', ())])
 
 
+def revolve(other, offset=0):
+    """Spin a 2D profile (drawn in the xy plane) around the z axis, `offset`
+    away from it.  Transform the profile first to place it; transform the
+    result to place the solid."""
+    return Transform(other, [('revolve', (offset,))])
+
+
 def twist(other, k):
     return Transform(other, [('twist', (k,))])
 
@@ -339,6 +354,6 @@ def bend(other, k):
 
 # Methods, so shapes chain like fogleman's: sphere(1).translate(X).k(0.2)
 for _f in (translate, scale, rotate, rotate_to, orient, circular_array, repeat,
-           elongate, twist, bend, negate, dilate, erode, shell,
+           elongate, revolve, twist, bend, negate, dilate, erode, shell,
            union, difference, intersection, blend):
     setattr(SDF, _f.__name__, _f)
