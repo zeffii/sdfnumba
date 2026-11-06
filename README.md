@@ -22,9 +22,11 @@ background process in a second or two; until it is ready the shape runs on
 a slower interpreter. Changing only parameter values never recompiles.
 
 ## Sverchok
-Copy `sverchok/nodes/sdf_numba/` into `sverchok/nodes/`
-and add the menu entry listed in `sverchok/README.md`.
+Link `sverchok/nodes/sdf_numba/` and `sverchok/utils/sdfnumba_helper.py`
+into Sverchok and add the menu entries; see `sverchok/README.md`.
 Requires numba in Blender's Python.
+
+More on the nodes' settings: [ADDITIONAL_README.md](ADDITIONAL_README.md).
 
 ## License
 MIT. See LICENSE.
