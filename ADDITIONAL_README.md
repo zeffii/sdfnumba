@@ -38,7 +38,10 @@ edges) and remeshes that, which is a quick way to see what remeshing does.
 For more control, refine first with an SDF Mesh node, then remesh: connect
 SDF Mesh's Vertices and Polygons to SDF Remesh as well as the shape. You can
 then pick the starting resolution and Sharp/smooth yourself, and look at
-the mesh before and after remeshing side by side.
+the mesh before and after remeshing side by side. A starting mesh finer than
+the result is fine: it is brought down to size. For shapes with hard edges,
+keep Sharp on: a smooth starting mesh rounds them off, and the remesher
+can't always recover them.
 
 ## SDF Remesh: artifacts, warnings and Seed
 
@@ -58,7 +61,7 @@ try.
   smaller Edge length.
 - *Thin triangles*: try another Seed, or a higher Detail.
 - *Shortest edge is longer than parts of the shape are thick*: lower
-  Shortest edge.
+  Shortest edge (folds or thin triangles there come from the floor).
 
 **Shortest edge** (default 0.003, also the lowest it goes) is a hard floor:
 curvature, creases and thin parts can't ask for shorter edges. A few may

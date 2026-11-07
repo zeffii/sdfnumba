@@ -377,9 +377,19 @@ def test_remesh_shortest_edge_floor():
 
 
 def test_remesh_floor_thicker_than_shape_is_explained():
-    f = sn.difference(sn.sphere(1) & sn.box(1.5), sn.cylinder(0.5).orient(sn.X) | sn.cylinder(0.5))
-    p = f.program().compile()
+    p = lamp_shade().program().compile()          # its wall is 0.04 thick
     V, F = sn.generate(p, samples=2 ** 20, triangles=True)
-    *_, r = sn.remesh(p, V, F, shortest=0.02, report=True)
+    *_, r = sn.remesh(p, V, F, shortest=0.1, report=True)
     assert r['floor_conflict'] > 0
     assert 'Lower Shortest edge' in ' '.join(sn.advice(r))
+
+
+@pytest.mark.parametrize('samples', [2 ** 18, 2 ** 20, 2 ** 22])
+def test_remesh_fine_start_comes_down_to_size(samples):
+    """A starting mesh much finer than wanted is not mistaken for runaway
+    growth: it ends the same size and quality as a coarse start."""
+    p = sn.sphere(1).program().compile()
+    V, F = sn.generate(p, samples=samples, triangles=True)
+    *_, q = sn.remesh(p, V, F, report=True)
+    assert not q['runaway']
+    assert q['triangles'] < 5000 and q['caps'] == 0 and q['min_angle'] > 15

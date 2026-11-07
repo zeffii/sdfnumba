@@ -1104,10 +1104,13 @@ def quality(sdf, verts, tris):
 def advice(report):
     """Plain-language warnings for a remesh report (empty: nothing to say)."""
     out = []
-    if report.get('floor_conflict', 0) > 0 and (report['folded'] or report.get('runaway')):
+    thin = report['needles'] + report['caps']
+    if report.get('floor_conflict', 0) > 0 and (report['folded'] or report.get('runaway')
+                                               or thin > 0.01):
         out.append("Shortest edge is longer than parts of the shape are thick, so those "
-                   "parts fold. Lower Shortest edge.")
-    elif report.get('runaway') or report.get('input_folded', 0) > 0:
+                   "parts get folded or thin triangles. Lower Shortest edge.")
+        return out
+    if report.get('runaway') or report.get('input_folded', 0) > 0:
         n = report.get('input_folded', 0)
         folded = f' ({n} folded triangles in it)' if n else ''
         out.append(f"The starting mesh is too coarse for this shape's thinnest parts{folded}. "
@@ -1115,7 +1118,6 @@ def advice(report):
     elif report['folded'] > 0:
         out.append(f"{report['folded']} triangles are turned over, usually where the shape "
                    "narrows to a sharp edge. Try another Seed, or a smaller Edge length.")
-    thin = report['needles'] + report['caps']
     if thin > 0.01:
         out.append(f"{thin * 100:.1f}% of the triangles are thin (needles or caps). "
                    "Try another Seed, or a higher Detail.")
@@ -1156,7 +1158,8 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
     crease_len    edge length along creases (default: max_len / 4)
     gradation     how quickly sizes may grow away from creases and tight
                   curves (0.4 = 40% of the distance travelled)
-    iterations    remeshing passes
+    iterations    remeshing passes (more, up to 3x, while a starting mesh much
+                  finer than wanted is still coming down to size)
     shortest      hard floor on edge length, whatever curvature, creases or
                   thin parts ask for (default: none).  Above the thickness of
                   thin parts it can fold them: the report will say so
@@ -1210,9 +1213,17 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
         return np.ascontiguousarray(E[rng.permutation(len(E))]) if rng is not None else E
 
     ccos = crease_cos if crease_cos is not None else -2.0   # -2: no creases
-    for _ in range(iterations):
+    # a starting mesh much finer than wanted takes more passes to come down
+    # to size: keep going (up to 3x) while it is well above it and shrinking
+    expected = None
+    previous = len(F)
+    for it in range(3 * iterations):
         if runaway:
             break
+        if it >= iterations and not (expected and len(F) > 1.3 * expected
+                                     and len(F) < 0.95 * previous):
+            break
+        previous = len(F)
         # the one full crease scan per iteration; flags then travel with
         # the vertices through splits and collapses
         mesh = Mesh(V, F)
@@ -1222,9 +1233,11 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
         floor_conflict = max(floor_conflict, mesh.floor_conflict)
         # a brake: a starting mesh too coarse for thin parts can make splits
         # feed on themselves.  Splitting never goes far past what the sizing
-        # asks for (or twice where it started), and if an iteration still
-        # ends well above it, remeshing stops there
+        # asks for (or twice where it started), and if an iteration grew the
+        # mesh and still ends well above it, remeshing stops there.  (A fine
+        # starting mesh also starts well above it, but shrinks: not runaway.)
         expected = _expected_triangles(V, F, L)
+        at_start = len(F)
         most = max(4.0 * expected + 1000, 2.0 * len(F))
 
         # where edges are held short (thin parts, tight curves) the SDF is
@@ -1283,7 +1296,7 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
             V, F, L, vcrease = _compact(V, F, L, vcrease)
             if done == 0:
                 break
-        if len(F) > 3.0 * expected + 1000:
+        if len(F) > 3.0 * expected + 1000 and len(F) >= at_start:
             runaway = True                      # past this point it can't end well
 
         # flip away caps and towards valence 6, and turn any edge that cuts a crease
