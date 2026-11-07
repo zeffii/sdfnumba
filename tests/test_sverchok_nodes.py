@@ -321,3 +321,33 @@ def test_remesh_node_quiet_when_clean(env):
     feed(node, sn.box(1.5))
     node.process()
     assert not getattr(node, 'warnings', [])
+
+
+RECT = [(0, 0, -.5), (1, 0, -.5), (1, 0, .5), (0, 0, .5)]
+
+
+@pytest.mark.parametrize('form', ['points', 'edges', 'polygons'])
+def test_revolve_node(env, form):
+    node = make_node(env, 'sdf_revolve', 'SvSDFRevolveNode', 'revolve')
+    node.inputs['Vertices'].sv_set([RECT])
+    if form == 'edges':
+        node.inputs['Edges'].sv_set([[(2, 3), (0, 1), (3, 0), (1, 2)]])
+    if form == 'polygons':
+        node.inputs['Polygons'].sv_set([[(0, 1, 2, 3)]])
+    node.process()
+    shape = node.outputs['SDF'].data[0]
+    P = np.random.default_rng(0).uniform(-2, 2, (500, 3))
+    np.testing.assert_allclose(shape(P).ravel(), sn.rounded_cylinder(1, 0, 1)(P).ravel(),
+                               atol=1e-9)
+    assert not getattr(node, 'warnings', [])
+
+
+def test_revolve_node_objects_are_islands_and_warns_when_flattening(env):
+    node = make_node(env, 'sdf_revolve', 'SvSDFRevolveNode', 'revolve')
+    far = [(x + 2, y + 0.05 * (i == 0), z) for i, (x, y, z) in enumerate(RECT)]
+    node.inputs['Vertices'].sv_set([RECT, far])
+    node.process()
+    shape = node.outputs['SDF'].data[0]
+    assert shape(np.array([[0.5, 0, 0], [2.5, 0, 0], [1.5, 0, 0]])).ravel().tolist() \
+        == pytest.approx([-0.5, -0.5, 0.5], abs=1e-9)
+    assert any('moved onto it' in w for w in node.warnings)

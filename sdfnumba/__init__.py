@@ -17,6 +17,7 @@ _EXPORTS = {
     'remesh': ('remesh', 'quality', 'advice'),
     'grid': ('evaluate', 'primitive_ids', 'sample_grid', 'estimate_bounds',
              'background_safe'),
+    'profile': ('polygon', 'revolve_profile', 'profile_loops'),
 }
 
 

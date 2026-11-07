@@ -27,7 +27,7 @@ class Emitter:
     def op(self, name, *values):
         info = ops.REGISTRY[name]
         values = [float(v) for v in values]
-        if len(values) != info.nparams:
+        if info.nparams is not None and len(values) != info.nparams:
             raise ValueError(f'{name} takes {info.nparams} params, got {len(values)}')
         self.code.append((info.code, len(self.params)))
         self.params.extend(values)

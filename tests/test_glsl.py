@@ -7,7 +7,10 @@ import sdfnumba as sn
 from sdfnumba import glsl, ops
 from test_sdfnumba import CASES, POINTS, lamp_shade
 
-GLSL_CASES = dict(CASES, lamp_shade=lambda m: lamp_shade())
+from test_profile import vase
+
+GLSL_CASES = dict(CASES, lamp_shade=lambda m: lamp_shade(),
+                  revolved_profile=lambda m: m.revolve_profile(vase(), 'Z')[0])
 
 import gl_harness
 

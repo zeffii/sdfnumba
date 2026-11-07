@@ -14,6 +14,9 @@ Kinds of op (what the function receives and returns):
     DUNARY_AUX  f(d, a, P, o)           -> d          ... using a popped aux value
     DBINARY     f(d1, d2, P, o)         -> d          combine the top two distances
 
+An op with nparams=None takes any number of parameters; it reads how many
+from its first one (see polygon).
+
 To add an op: write the function, decorate it with @op(KIND, nparams), and
 give the API in api.py a way to build it.  Nothing else needs changing.
 """
@@ -227,6 +230,31 @@ def arc(x, y, z, P, o):
     qy = abs(-math.sin(c) * x + math.cos(c) * y)
     psi = _clamp(math.atan2(qy, qx), 0.0, half)
     return math.hypot(qx - r * math.cos(psi), qy - r * math.sin(psi))
+
+
+@op(PRIM, None)
+def polygon(x, y, z, P, o):
+    # line segments in the xy plane: count m, then m * (ax, ay, bx, by).
+    # Inside is decided by even-odd crossings over all segments together, so
+    # several closed loops give islands, and loops inside loops give holes.
+    m = int(P[o])
+    d2 = 1e300
+    s = 1.0
+    for i in range(m):
+        k = o + 1 + 4 * i
+        ax, ay, bx, by = P[k], P[k + 1], P[k + 2], P[k + 3]
+        ex, ey = bx - ax, by - ay
+        wx, wy = x - ax, y - ay
+        ee = ex * ex + ey * ey
+        t = 0.0 if ee == 0.0 else _clamp((wx * ex + wy * ey) / ee, 0.0, 1.0)
+        dx, dy = wx - ex * t, wy - ey * t
+        d2 = min(d2, dx * dx + dy * dy)
+        c1 = y >= ay
+        c2 = y < by
+        c3 = ex * wy > ey * wx
+        if (c1 and c2 and c3) or (not c1 and not c2 and not c3):
+            s = -s
+    return s * math.sqrt(d2)
 
 
 # --- point transforms --------------------------------------------------

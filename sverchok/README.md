@@ -18,6 +18,7 @@
 
        - SDF:
            - icon_name: MESH_ICOSPHERE
+           - SvSDFRevolveNode
            - SvSDFMeshNode
            - SvSDFRemeshNode
 
@@ -37,6 +38,9 @@ an SNLite node and connect its `sdf` output to the SDF Viewer.
   seam, crease and outline lines, colour per primitive, and a distance slice.
   Nothing is meshed. If twisted or bent shapes show holes, lower *Step scale*
   in the N-panel.
+- **SDF Revolve** spins a profile (vertices, edges or polygons) around the
+  X, Y or Z axis into a shape; holes and islands work. See
+  [ADDITIONAL_README.md](../ADDITIONAL_README.md#sdf-revolve-profiles).
 - **SDF Mesh** makes a closed mesh (quads, or triangles), smooth or *Sharp*.
 - **SDF Remesh** remeshes the shape: triangles follow curvature and get finer
   along creases. Only the shape is needed; see

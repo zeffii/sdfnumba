@@ -61,6 +61,32 @@ what to try.
 Every value gives an equally valid mesh, and the same seed always gives the
 same mesh; another seed is worth a try when a warning appears.
 
+## SDF Revolve: profiles
+
+The profile is closed loops of vertices, given one of three ways:
+
+- **Vertices** alone: one loop, the vertices in order. It closes itself; a
+  repeated first vertex at the end is fine.
+- **Vertices + Edges**: any order. The edges are chained into loops and then
+  dropped. Every vertex used needs exactly two edges, so open strips and
+  branches are refused with a message.
+- **Vertices + Polygons**: the outline of the polygons. Edges shared by two
+  polygons are inside the profile and dropped, so a profile cut into several
+  faces still counts as one region.
+
+A loop inside another makes a hole; separate loops make islands, each swept
+into its own ring. Every object on the sockets adds to the same profile.
+
+All vertices must lie in one plane, which should contain the axis (XZ or YZ
+for Z). The node fits the plane and moves stray vertices onto it, warning
+only when one was off by more than float32 rounding (1e-5 of the profile's
+size). A plane within about 1° of a world plane is taken as that plane. A
+tilted plane works too: it is revolved around the axis's projection onto it.
+A profile may lie on either side of the axis, or across it. An edge drawn
+along the axis is not a surface.
+
+From Python: `shape, info = sn.revolve_profile(sn.profile_loops(verts, edges, polygons), 'Z')`.
+
 ## SDF Mesh and SDF Remesh: Settle
 
 While values keep changing (a slider being dragged), SDF Mesh outputs a

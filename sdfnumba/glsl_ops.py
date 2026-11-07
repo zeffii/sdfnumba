@@ -101,6 +101,22 @@ OPS = {
         float psi = clamp(atan(qy, qx), 0.0, span);
         return length(vec2(qx - r * cos(psi), qy - r * sin(psi)));''',
 
+    'polygon': '''
+        int m = int(PRM(o));
+        float d2 = 1e30, s = 1.0;
+        for (int i = 0; i < m; i++) {
+            int k = o + 1 + 4 * i;
+            vec2 a = vec2(PRM(k), PRM(k + 1)), b = vec2(PRM(k + 2), PRM(k + 3));
+            vec2 e = b - a, w = p.xy - a;
+            float ee = dot(e, e);
+            float t = (ee == 0.0) ? 0.0 : clamp(dot(w, e) / ee, 0.0, 1.0);
+            vec2 q = w - e * t;
+            d2 = min(d2, dot(q, q));
+            bvec3 c = bvec3(p.y >= a.y, p.y < b.y, e.x * w.y > e.y * w.x);
+            if (all(c) || all(not(c))) s = -s;
+        }
+        return s * sqrt(d2);''',
+
     # --- point transforms
     'translate': 'return p - PRM3(o);',
     'scale_point': 'return p / PRM3(o);',
