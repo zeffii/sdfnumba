@@ -57,6 +57,14 @@ try.
   edge (e.g. where two equal-radius holes cross). Try another Seed, or a
   smaller Edge length.
 - *Thin triangles*: try another Seed, or a higher Detail.
+- *Shortest edge is longer than parts of the shape are thick*: lower
+  Shortest edge.
+
+**Shortest edge** (default 0.003, also the lowest it goes) is a hard floor:
+curvature, creases and thin parts can't ask for shorter edges. A few may
+stay shorter where a collapse would fold the mesh (knife edges, where two
+holes of equal radius cross). Set it above the thickness of the shape's
+thinnest parts and those parts fold.
 
 **Seed** (default 0) only changes the order the remesher visits edges in.
 Every value gives an equally valid mesh, and the same seed always gives the

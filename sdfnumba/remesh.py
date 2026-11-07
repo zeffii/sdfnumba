@@ -582,7 +582,7 @@ def _crease_info(mesh, crease_cos, program, h):
 # --- sizing ------------------------------------------------------------------
 
 def _sizing(mesh, program, min_len, max_len, tolerance, crease_len, crease_count,
-            gradation):
+            gradation, shortest=0.0):
     V = mesh.V
     kappa = _curvature(program.run, program.code, program.params, V, 0.1 * min_len)
     eps = tolerance
@@ -596,6 +596,9 @@ def _sizing(mesh, program, min_len, max_len, tolerance, crease_len, crease_count
     thin = _local_size(program.run, program.code, program.params, V,
                        2.0 * max_len / 16, 2.0 * max_len)
     L = np.minimum(L, np.maximum(thin, 0.5 * min_len))
+    # where the floor overrides the thickness limit (counted for the report)
+    mesh.floor_conflict = int((np.maximum(thin, 0.5 * min_len) < shortest).sum()) \
+        if shortest else 0
     # grade: a vertex's target can't exceed a neighbour's by more than
     # gradation * (distance between them)
     a, b = mesh.E[:, 0], mesh.E[:, 1]
@@ -606,7 +609,9 @@ def _sizing(mesh, program, min_len, max_len, tolerance, crease_len, crease_count
         np.minimum.at(L, b, L[a] + step)
         if np.array_equal(before, L):
             break
-    return L
+    # the hard floor wins over everything.  Edges are only collapsed below
+    # 0.8 of their target, so the target floor sits above it
+    return np.maximum(L, shortest / 0.8)
 
 
 # --- topology batches ----------------------------------------------------------
@@ -1021,7 +1026,10 @@ def quality(sdf, verts, tris):
 def advice(report):
     """Plain-language warnings for a remesh report (empty: nothing to say)."""
     out = []
-    if report.get('runaway') or report.get('input_folded', 0) > 0:
+    if report.get('floor_conflict', 0) > 0 and (report['folded'] or report.get('runaway')):
+        out.append("Shortest edge is longer than parts of the shape are thick, so those "
+                   "parts fold. Lower Shortest edge.")
+    elif report.get('runaway') or report.get('input_folded', 0) > 0:
         n = report.get('input_folded', 0)
         folded = f' ({n} folded triangles in it)' if n else ''
         out.append(f"The starting mesh is too coarse for this shape's thinnest parts{folded}. "
@@ -1054,7 +1062,7 @@ def _expected_triangles(V, F, L):
 
 def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
            creases=True, crease_angle=30.0, crease_len=None, gradation=0.4,
-           iterations=6, project=True, seed=0, report=False):
+           iterations=6, project=True, seed=0, shortest=None, report=False):
     """Remesh a closed mesh of `sdf` adaptively.  Returns (verts, triangles),
     or (verts, triangles, quality dict) with report=True (see quality()).
 
@@ -1071,11 +1079,16 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
     gradation     how quickly sizes may grow away from creases and tight
                   curves (0.4 = 40% of the distance travelled)
     iterations    remeshing passes
+    shortest      hard floor on edge length, whatever curvature, creases or
+                  thin parts ask for (default: none).  Above the thickness of
+                  thin parts it can fold them: the report will say so
     seed          0: edges are visited in their natural order; any other
                   value shuffles that order, giving a different (but equally
                   valid) result.  The same seed always gives the same mesh.
     report        also return quality(), plus:
                     input_folded  folded triangles in the mesh passed in
+                    floor_conflict  vertices where `shortest` overrode the
+                                  shape's thickness
                     runaway       True if splitting was stopped because the
                                   mesh grew far past what the sizing asks for
                   Both mean the starting mesh is too coarse for the shape's
@@ -1100,11 +1113,14 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
     input_folded = int(_folded(program, V, F, 1e-4 * np.linalg.norm(V.max(0) - V.min(0)) / 400).sum()) \
         if report else 0
     runaway = False
+    floor_conflict = 0
     diag = np.linalg.norm(V.max(0) - V.min(0))
     max_len = max_len or diag / 40
     min_len = min_len or max_len / 10
     tolerance = tolerance or min_len / 4
     crease_len = crease_len or max_len / 4
+    shortest = shortest or 0.0
+    max_len, min_len, crease_len = (max(x, shortest) for x in (max_len, min_len, crease_len))
     crease_cos = math.cos(math.radians(crease_angle)) if creases else None
     h_grad = 1e-4 * min_len
     code, P = program.code, program.params
@@ -1124,7 +1140,8 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
         mesh = Mesh(V, F)
         _, vcrease = _crease_info(mesh, crease_cos, program, h_grad)
         L = _sizing(mesh, program, min_len, max_len, tolerance, crease_len,
-                    vcrease, gradation)
+                    vcrease, gradation, shortest)
+        floor_conflict = max(floor_conflict, mesh.floor_conflict)
         # a brake: a starting mesh too coarse for thin parts can make splits
         # feed on themselves.  Splitting never goes far past what the sizing
         # asks for (or twice where it started), and if an iteration still
@@ -1230,5 +1247,6 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
         q = quality(program, V, T)
         q['input_folded'] = input_folded
         q['runaway'] = runaway
+        q['floor_conflict'] = floor_conflict
         return V, T, q
     return V, T

@@ -57,6 +57,10 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
     detail: FloatProperty(
         name='Detail', default=10.0, min=1.0, max=100.0, update=updateNode,
         description='How much shorter edges may get on tight curves (max / min length)')
+    shortest: FloatProperty(
+        name='Shortest edge', default=0.003, min=0.003, update=updateNode,
+        description='Hard floor on edge length: no edge is made shorter than this, '
+                    'whatever curvature, creases or thin parts ask for')
     creases: BoolProperty(
         name='Creases', default=True, update=updateNode,
         description='Find creases and keep them, with finer triangles along them')
@@ -111,6 +115,7 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
             col.prop(self, 'start_resolution')
         col.prop(self, 'max_len')
         col.prop(self, 'detail')
+        col.prop(self, 'shortest')
         col.prop(self, 'seed')
         col.prop(self, 'creases', toggle=True)
 
@@ -162,7 +167,7 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
                        creases=self.creases, crease_angle=self.crease_angle,
                        crease_len=self.crease_len or None,
                        gradation=self.gradation, iterations=self.iterations,
-                       seed=self.seed)
+                       seed=self.seed, shortest=max(self.shortest, 0.003))
         detail = self.detail
         signature = (shape_signature(shape), mesh_key,
                      tuple(sorted(options.items())), detail)

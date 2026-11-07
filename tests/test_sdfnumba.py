@@ -365,3 +365,21 @@ def test_remesh_reports_too_coarse_start():
     V, T, r = sn.remesh(f, verts, faces, report=True)
     assert r['input_folded'] > 0 or r['runaway'] or r['folded'] > 0
     assert time.time() - start < 30                 # the brake keeps it bounded
+
+
+def test_remesh_shortest_edge_floor():
+    p = lamp_shade().program().compile()
+    V, F = sn.generate(p, samples=2 ** 20, triangles=True)
+    v, t = sn.remesh(p, V, F, shortest=0.02)
+    e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+    lengths = np.linalg.norm(v[e[:, 0]] - v[e[:, 1]], axis=1)
+    assert (lengths < 0.02).mean() < 0.01
+
+
+def test_remesh_floor_thicker_than_shape_is_explained():
+    f = sn.difference(sn.sphere(1) & sn.box(1.5), sn.cylinder(0.5).orient(sn.X) | sn.cylinder(0.5))
+    p = f.program().compile()
+    V, F = sn.generate(p, samples=2 ** 20, triangles=True)
+    *_, r = sn.remesh(p, V, F, shortest=0.02, report=True)
+    assert r['floor_conflict'] > 0
+    assert 'Lower Shortest edge' in ' '.join(sn.advice(r))
