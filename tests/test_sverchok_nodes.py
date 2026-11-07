@@ -207,3 +207,21 @@ def test_remesh_node_passes_through_then_remeshes(env):
     out_p = node.outputs['Polygons'].data[0]
     assert len(out_v) != len(verts) and all(len(p) == 3 for p in out_p)
     assert np.abs(shape(out_v)).max() < 1e-6
+
+
+def test_remesh_node_without_mesh_inputs_makes_its_own(env):
+    shape = sn.box(1.5)
+    node = make_node(env, 'sdf_remesh', 'SvSDFRemeshNode', 'remesh_own')
+    feed(node, shape)                              # only the shape is connected
+    node.process()
+    coarse = np.asarray(node.outputs['Vertices'].data[0])
+    assert len(coarse) > 0                         # a coarse stand-in while settling
+    env.clock[0] = 10.0
+    env.timers.run_all()
+    out_v = np.asarray(node.outputs['Vertices'].data[0])
+    out_p = node.outputs['Polygons'].data[0]
+    assert all(len(p) == 3 for p in out_p)
+    assert np.abs(shape(out_v)).max() < 1e-6
+    # edges and corners kept: the box's corners are vertices of the result
+    corner = np.array([0.75, 0.75, 0.75])
+    assert np.linalg.norm(out_v - corner, axis=1).min() < 1e-6

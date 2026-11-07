@@ -4,9 +4,14 @@
 projected onto the exact surface.  Triangles follow the curvature, get finer
 along creases (optional) and grow gradually away from them.
 
-Takes the shape and a closed mesh of it (normally from SDF Mesh).  While the
-inputs keep changing it passes the input mesh through untouched; once they
-have been still for `Settle` seconds it remeshes (see sdfnumba_helper.py).
+Needs only the shape.  The Vertices and Polygons inputs are optional: a
+closed mesh of the same shape to start from (normally from SDF Mesh), which
+gives more control.  Without them the node makes its own starting mesh
+(Start resolution, sharp edges).
+
+While the inputs keep changing it outputs the starting mesh untouched (or,
+without mesh inputs, a coarse one); once they have been still for `Settle`
+seconds it remeshes (see sdfnumba_helper.py).
 """
 
 import bpy
@@ -54,6 +59,10 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         name='Gradation', default=0.4, min=0.05, max=2.0, update=updateNode,
         description='How quickly triangles may grow away from creases and tight curves')
     iterations: IntProperty(name='Iterations', default=6, min=1, max=30, update=updateNode)
+    start_resolution: IntProperty(
+        name='Start resolution', default=64, min=8, max=512, update=updateNode,
+        description='Without mesh inputs: grid cells along the longest side of the '
+                    'starting mesh the node makes itself')
     settle: FloatProperty(
         name='Settle', default=0.5, min=0.0, max=5.0, subtype='TIME', unit='TIME',
         update=updateNode,
@@ -67,8 +76,13 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         self.outputs.new('SvStringsSocket', 'Edges')
         self.outputs.new('SvStringsSocket', 'Polygons')
 
+    def _has_mesh_input(self):
+        return self.inputs['Vertices'].is_linked and self.inputs['Polygons'].is_linked
+
     def draw_buttons(self, context, layout):
         col = layout.column(align=True)
+        if not self._has_mesh_input():
+            col.prop(self, 'start_resolution')
         col.prop(self, 'max_len')
         col.prop(self, 'detail')
         col.prop(self, 'creases', toggle=True)
@@ -83,35 +97,59 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         col.prop(self, 'iterations')
         layout.prop(self, 'settle')
 
+    def _start_mesh(self, shape, resolution, sharp):
+        """A closed mesh of the shape to start from, when none is connected."""
+        program = shape.program()
+        lo, hi = sn.estimate_bounds(program)
+        step = max(h - l for l, h in zip(lo, hi)) / resolution
+        return sn.generate(program, step=step, bounds=(lo, hi), sharp=sharp,
+                           triangles=True)
+
     def process(self):
         inputs = self.inputs
-        if not all(inputs[k].is_linked for k in ('SDF', 'Vertices', 'Polygons')):
-            return
-        if not any(s.is_linked for s in self.outputs):
+        if not inputs['SDF'].is_linked or not any(s.is_linked for s in self.outputs):
             return
         shape = first_shape(inputs['SDF'])
-        verts = inputs['Vertices'].sv_get(deepcopy=False, default=[[]])[0]
-        polys = inputs['Polygons'].sv_get(deepcopy=False, default=[[]])[0]
-        if shape is None or not len(verts) or not len(polys):
+        if shape is None:
             return
-        V = np.array(verts, dtype=np.float64).reshape(-1, 3)
-        F = faces_array(polys)
+
+        if self._has_mesh_input():
+            verts = inputs['Vertices'].sv_get(deepcopy=False, default=[[]])[0]
+            polys = inputs['Polygons'].sv_get(deepcopy=False, default=[[]])[0]
+            if not len(verts) or not len(polys):
+                return
+            V = np.array(verts, dtype=np.float64).reshape(-1, 3)
+            F = faces_array(polys)
+            mesh_key = (V.tobytes(), F.tobytes())
+
+            def start():
+                return V, F
+
+            def quick():
+                return mesh_outputs(V, F)       # the input, untouched
+        else:
+            res = self.start_resolution
+            mesh_key = ('own', res)
+
+            def start():
+                return self._start_mesh(shape, res, True)
+
+            def quick():
+                return mesh_outputs(*self._start_mesh(shape, min(res, 24), False))
 
         options = dict(max_len=self.max_len or None,
                        creases=self.creases, crease_angle=self.crease_angle,
                        crease_len=self.crease_len or None,
                        gradation=self.gradation, iterations=self.iterations)
         detail = self.detail
-        signature = (shape_signature(shape), V.tobytes(), F.tobytes(),
+        signature = (shape_signature(shape), mesh_key,
                      tuple(sorted(options.items())), detail)
 
-        def quick():
-            return mesh_outputs(V, F)       # the input, untouched
-
         def full():
-            max_len = options['max_len'] or np.linalg.norm(V.max(0) - V.min(0)) / 40
-            out_v, out_f = sn.remesh(shape, V, F, **dict(options, max_len=max_len,
-                                                         min_len=max_len / detail))
+            V0, F0 = start()
+            max_len = options['max_len'] or np.linalg.norm(V0.max(0) - V0.min(0)) / 40
+            out_v, out_f = sn.remesh(shape, V0, F0, **dict(options, max_len=max_len,
+                                                           min_len=max_len / detail))
             return mesh_outputs(out_v, out_f)
 
         result = request(self, signature, quick, full, self.settle)

@@ -29,9 +29,20 @@ shading turns sharply, for edges no primitive reports, e.g. on twisted or
 bent shapes. Lines found this way are rougher; *Crease* sets how sharp a
 turn counts.
 
+## SDF Remesh: starting mesh
+
+SDF Remesh needs only the shape. Without anything on its Vertices and
+Polygons inputs it makes its own starting mesh (*Start resolution*, sharp
+edges) and remeshes that, which is a quick way to see what remeshing does.
+
+For more control, refine first with an SDF Mesh node, then remesh: connect
+SDF Mesh's Vertices and Polygons to SDF Remesh as well as the shape. You can
+then pick the starting resolution and Sharp/smooth yourself, and look at
+the mesh before and after remeshing side by side.
+
 ## SDF Mesh and SDF Remesh: Settle
 
 While values keep changing (a slider being dragged), SDF Mesh outputs a
-coarse mesh and SDF Remesh passes its input through. Once nothing has
-changed for *Settle* seconds they build the full result. 0 builds it on
-every change.
+coarse mesh, and SDF Remesh outputs its starting mesh (a coarse one if it
+makes its own). Once nothing has changed for *Settle* seconds they build the
+full result. 0 builds it on every change.
