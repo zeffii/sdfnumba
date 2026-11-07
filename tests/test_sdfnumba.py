@@ -197,14 +197,18 @@ def test_remesh_sphere_matches_sizing():
 def test_remesh_box(creases):
     f = sn.box(1.5)
     verts, faces = f.generate(samples=2 ** 15, sharp=True)
-    V, T = sn.remesh(f, verts, faces, creases=creases)
+    V, T, report = sn.remesh(f, verts, faces, creases=creases, report=True)
     assert_closed_manifold(T)
-    assert np.abs(f(V)).max() < 1e-9
+    assert report['folded'] == 0
     vol = signed_volume(V, T)
     if creases:
+        assert np.abs(f(V)).max() < 1e-9
         assert abs(vol - 1.5 ** 3) < 1e-6          # edges and corners kept exactly
     else:
-        assert 0.98 * 1.5 ** 3 < vol < 1.5 ** 3   # slightly rounded
+        # rounded edges; a few vertices near them stay just off the surface,
+        # where projecting them would turn a triangle over
+        assert report['max_offset'] < 0.01
+        assert 0.98 * 1.5 ** 3 < vol < 1.5 ** 3
 
 
 def test_remesh_finer_along_creases():
@@ -330,3 +334,34 @@ def test_remesh_is_deterministic():
     for V, T in runs[1:]:
         np.testing.assert_array_equal(V, runs[0][0])
         np.testing.assert_array_equal(T, runs[0][1])
+
+
+def test_remesh_leaves_its_input_alone():
+    f = sn.box(1.5) - sn.sphere(0.9)
+    verts, faces = f.generate(samples=2 ** 14, sharp=True, triangles=True)
+    verts = verts.astype(np.float64)
+    faces = faces.astype(np.int64)
+    v0, f0 = verts.copy(), faces.copy()
+    sn.remesh(f, verts, faces, iterations=2)
+    np.testing.assert_array_equal(verts, v0)
+    np.testing.assert_array_equal(faces, f0)
+
+
+def test_remesh_quality_on_thin_shell():
+    f = lamp_shade()
+    f.compile()
+    verts, faces = f.generate(samples=2 ** 20, sharp=True)
+    V, T, r = sn.remesh(f, verts, faces, report=True)
+    assert_closed_manifold(T)
+    assert r['folded'] == 0 and r['input_folded'] == 0 and not r['runaway']
+    assert r['needles'] < 0.005 and r['caps'] < 0.005 and r['min_angle'] > 15
+
+
+def test_remesh_reports_too_coarse_start():
+    f = lamp_shade()                               # wall 0.04, cells ~0.032 at 2^17
+    f.compile()
+    verts, faces = f.generate(samples=2 ** 17, sharp=True)
+    start = time.time()
+    V, T, r = sn.remesh(f, verts, faces, report=True)
+    assert r['input_folded'] > 0 or r['runaway'] or r['folded'] > 0
+    assert time.time() - start < 30                 # the brake keeps it bounded
