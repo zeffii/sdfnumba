@@ -54,7 +54,7 @@ class SvSDFMeshNode(SverchCustomTreeNode, bpy.types.Node):
         name='Triangles', default=False, update=updateNode,
         description='Output triangles instead of quads')
     settle: FloatProperty(
-        name='Settle', default=0.3, min=0.0, max=5.0, subtype='TIME', unit='TIME',
+        name='Settle', default=0.75, min=0.0, max=5.0, subtype='TIME', unit='TIME',
         update=updateNode,
         description='Seconds without changes before the full mesh is built; '
                     '0 builds it on every change')

@@ -64,7 +64,7 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         description='Without mesh inputs: grid cells along the longest side of the '
                     'starting mesh the node makes itself')
     settle: FloatProperty(
-        name='Settle', default=0.5, min=0.0, max=5.0, subtype='TIME', unit='TIME',
+        name='Settle', default=1.0, min=0.0, max=5.0, subtype='TIME', unit='TIME',
         update=updateNode,
         description='Seconds without changes before remeshing; 0 remeshes on every change')
 
