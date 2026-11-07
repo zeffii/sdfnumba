@@ -35,7 +35,7 @@ def _cell_mask(v, i, j, k):
     return m
 
 
-@njit(parallel=True, cache=True)
+@njit(parallel=True, cache=True, nogil=True)
 def _place_vertices(v):
     nx, ny, nz = v.shape
     cx, cy, cz = nx - 1, ny - 1, nz - 1
@@ -109,7 +109,7 @@ def _edge_ok(nx, ny, nz, i, j, k, axis):
     return k < nz - 1 and 0 < i < nx - 1 and 0 < j < ny - 1
 
 
-@njit(parallel=True, cache=True)
+@njit(parallel=True, cache=True, nogil=True)
 def _make_quads(v, index):
     nx, ny, nz = v.shape
     counts = np.zeros(nx, dtype=np.int64)

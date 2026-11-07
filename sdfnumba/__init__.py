@@ -15,7 +15,8 @@ __version__ = '0.1.0'
 _EXPORTS = {
     'mesh': ('generate', 'surface_nets', 'triangulate'),
     'remesh': ('remesh',),
-    'grid': ('evaluate', 'primitive_ids', 'sample_grid', 'estimate_bounds'),
+    'grid': ('evaluate', 'primitive_ids', 'sample_grid', 'estimate_bounds',
+             'background_safe'),
 }
 
 

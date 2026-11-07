@@ -69,7 +69,7 @@ def _mid_dist(run, code, P, V, a, b, ps, ds, aux):
 
 # --- SDF queries ---------------------------------------------------------
 
-@njit(types.void(FN, A2i, A1, A2, A1b, f64, i64), parallel=True, cache=True, fastmath=True)
+@njit(types.void(FN, A2i, A1, A2, A1b, f64, i64), parallel=True, cache=True, nogil=True, fastmath=True)
 def _project(run, code, P, V, mask, h, steps):
     """Newton steps onto the zero level: p -= d * g / |g|^2."""
     for i in prange(V.shape[0]):
@@ -94,7 +94,7 @@ def _project(run, code, P, V, mask, h, steps):
 
 
 @njit(types.void(FN, A2i, A1, A2, A2i, A1i, A1i, A1b, A1i, f64, i64),
-      parallel=True, cache=True, fastmath=True)
+      parallel=True, cache=True, nogil=True, fastmath=True)
 def _project_features(run, code, P, V, F, vf_start, vf, mask, rank, h, steps):
     """Snap vertices onto creases and corners.
 
@@ -170,7 +170,7 @@ def _project_features(run, code, P, V, F, vf_start, vf, mask, rank, h, steps):
             V[i, 0], V[i, 1], V[i, 2] = x + mx, y + my, z + mz
 
 
-@njit(A1(FN, A2i, A1, A2, f64), parallel=True, cache=True, fastmath=True)
+@njit(A1(FN, A2i, A1, A2, f64), parallel=True, cache=True, nogil=True, fastmath=True)
 def _curvature(run, code, P, V, h):
     """Largest absolute principal curvature at each vertex, from the SDF's
     Hessian restricted to the tangent plane.  `h` sets the scale it sees."""
@@ -243,7 +243,7 @@ def _normal(V, i, j, k):
 
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _build(V, F):
     """Edges, valence, vertex->face lists, edge lengths and dihedral cosines.
     Edges are matched by bucketing half-edges on their smaller vertex."""
@@ -336,7 +336,7 @@ class Mesh:
 
 
 @njit(types.Tuple((A2, A1i))(FN, FN_ID, A2i, A1, A2, A2i, f64),
-      parallel=True, cache=True, fastmath=True)
+      parallel=True, cache=True, nogil=True, fastmath=True)
 def _face_normals_sdf(run, run_id, code, P, V, F, h):
     """Unit SDF gradient at each face centre (unlike the face's own normal,
     a badly shaped triangle can't throw it off), and which primitive the
@@ -403,7 +403,7 @@ def _sizing(mesh, program, min_len, max_len, tolerance, crease_len, crease_count
 # --- topology batches ----------------------------------------------------------
 
 @njit(types.UniTuple(i64, 3)(FN, FN_ID, A2i, A1, A2, A2i, i64, i64, A2i, A1, A1b, A1i,
-                              f64, f64), cache=True)
+                              f64, f64), cache=True, nogil=True)
 def _split_batch(run, run_id, code, P, V, F, nv, nf, E, L, lock, vcrease, h, crease_cos):
     """Split long edges.  An edge's two faces must be untouched this batch
     (`lock` is per face).  New vertices are appended at V[nv...], new faces
@@ -450,7 +450,7 @@ def _split_batch(run, run_id, code, P, V, F, nv, nf, E, L, lock, vcrease, h, cre
 
 
 @njit(i64(FN, FN_ID, A2i, A1, A2, A2i, A2i, A1, A1i, A1i, A1i, A1b, A1b, A1i, A1i,
-          f64, f64), cache=True)
+          f64, f64), cache=True, nogil=True)
 def _collapse_batch(run, run_id, code, P, V, F, E, L, valence, vf_start, vf, lock, alive,
                     stamp, vcrease, h, crease_cos):
     """Collapse short edges, b into a.  Faces f0, f1 die; b is left unused."""
@@ -561,7 +561,7 @@ def _collapse_batch(run, run_id, code, P, V, F, E, L, valence, vf_start, vf, loc
 
 
 @njit(i64(FN, FN_ID, A2i, A1, A2, A2i, A2i, A1i, A1i, A1i, A1b, A1i, f64, f64, b1),
-      cache=True)
+      cache=True, nogil=True)
 def _flip_batch(run, run_id, code, P, V, F, E, valence, vf_start, vf, lock, vcrease, h,
                 crease_cos, features_only):
     """Flip edges.  mid_ab / mid_cd are |SDF| at the midpoints of the edge and
@@ -626,7 +626,7 @@ def _flip_batch(run, run_id, code, P, V, F, E, valence, vf_start, vf, lock, vcre
     return flips
 
 
-@njit(parallel=True, cache=True)
+@njit(parallel=True, cache=True, nogil=True)
 def _relax(V, F, vf_start, vf, crease_count, E, crease_e, out):
     """Tangential smoothing target for each vertex (area-weighted centroid
     of its one-ring, moved within the tangent plane)."""

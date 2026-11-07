@@ -30,6 +30,17 @@ except ImportError:
     sn = None                  # Sverchok shows the node as needing sdfnumba
 
 
+def _start_mesh(shape, resolution, sharp):
+    """A closed mesh of the shape to start from, when none is connected.
+    Module level, not a node method: it may run on a background thread,
+    which must not touch Blender data."""
+    program = shape.program()
+    lo, hi = sn.estimate_bounds(program)
+    step = max(h - l for l, h in zip(lo, hi)) / resolution
+    return sn.generate(program, step=step, bounds=(lo, hi), sharp=sharp,
+                       triangles=True)
+
+
 class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
     """
     Triggers: sdf remesh adaptive isotropic
@@ -68,6 +79,11 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         update=updateNode,
         description='Seconds without changes before remeshing; 0 remeshes on every change')
 
+    background: BoolProperty(
+        name='Build in background', default=False, update=updateNode,
+        description='Build the full result on a separate thread so Blender stays '
+                    'responsive; results made stale by later changes are dropped')
+
     def sv_init(self, context):
         self.inputs.new('SvStringsSocket', 'SDF')
         self.inputs.new('SvVerticesSocket', 'Vertices')
@@ -96,14 +112,7 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         col.prop(self, 'gradation')
         col.prop(self, 'iterations')
         layout.prop(self, 'settle')
-
-    def _start_mesh(self, shape, resolution, sharp):
-        """A closed mesh of the shape to start from, when none is connected."""
-        program = shape.program()
-        lo, hi = sn.estimate_bounds(program)
-        step = max(h - l for l, h in zip(lo, hi)) / resolution
-        return sn.generate(program, step=step, bounds=(lo, hi), sharp=sharp,
-                           triangles=True)
+        layout.prop(self, 'background')
 
     def process(self):
         inputs = self.inputs
@@ -132,10 +141,10 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
             mesh_key = ('own', res)
 
             def start():
-                return self._start_mesh(shape, res, True)
+                return _start_mesh(shape, res, True)
 
             def quick():
-                return mesh_outputs(*self._start_mesh(shape, min(res, 24), False))
+                return mesh_outputs(*_start_mesh(shape, min(res, 24), False))
 
         options = dict(max_len=self.max_len or None,
                        creases=self.creases, crease_angle=self.crease_angle,
@@ -152,7 +161,7 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
                                                            min_len=max_len / detail))
             return mesh_outputs(out_v, out_f)
 
-        result = request(self, signature, quick, full, self.settle)
+        result = request(self, signature, quick, full, self.settle, self.background)
         if result is None:
             return
         out_v, out_e, out_p = result

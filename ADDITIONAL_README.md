@@ -46,3 +46,11 @@ While values keep changing (a slider being dragged), SDF Mesh outputs a
 coarse mesh, and SDF Remesh outputs its starting mesh (a coarse one if it
 makes its own). Once nothing has changed for *Settle* seconds they build the
 full result. 0 builds it on every change.
+
+**Build in background** (N-panel, default off). Builds the full result on a
+separate thread, so Blender stays responsive while it works, and drops a
+result if the values changed while it was being built (a pause mid-drag
+then never flashes a stale mesh). Off, the full result is built on Blender's
+main thread, which freezes the UI briefly. sdfnumba falls back to the main
+thread by itself if numba's threading layer can't safely run its kernels
+alongside other numba code (the 'workqueue' layer).

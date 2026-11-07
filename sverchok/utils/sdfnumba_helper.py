@@ -11,7 +11,7 @@ Shapes and meshes on sockets:
     faces_array(polygons)      polygons from a socket as an int array
 
 Settle-then-refine (SDF Mesh, SDF Remesh):
-    request(node, signature, quick, full, delay)
+    request(node, signature, quick, full, delay, background=False)
     forget(node)
 
 While a node's inputs keep changing (a slider being dragged), it hands out a
@@ -23,10 +23,16 @@ cached, and the node is re-run so it can output it.
     quick       function returning the stand-in result (or None: keep the last one)
     full        function returning the real result
     delay       seconds of quiet before building the full result (0: always now)
+    background  build the full result on a separate thread, so Blender stays
+                responsive; if the inputs change while it builds, the result
+                is thrown away instead of shown.  `full` must not touch bpy.
+                Falls back to building on the main thread when numba's
+                threading layer can't run kernels from two threads at once.
 """
 
+import threading
 import time
-from functools import partial
+from functools import cache, partial
 
 import bpy
 import numpy as np
@@ -82,11 +88,39 @@ def faces_array(polygons):
 # --- settle-then-refine ----------------------------------------------------------
 
 _state = {}     # node id -> dict
+POLL = 0.05     # seconds between checks on a background build
 
 
-def request(node, signature, quick, full, delay):
+@cache
+def background_safe():
+    import sdfnumba
+    return sdfnumba.background_safe()
+
+
+class _Job:
+    """A full build running on its own thread."""
+
+    def __init__(self, signature, full):
+        self.signature = signature
+        self.result = None
+        self.error = None
+        self.thread = threading.Thread(target=self._run, args=(full,), daemon=True)
+        self.thread.start()
+
+    def _run(self, full):
+        try:
+            self.result = full()
+        except Exception as err:
+            self.error = err
+
+    @property
+    def done(self):
+        return not self.thread.is_alive()
+
+
+def request(node, signature, quick, full, delay, background=False):
     n_id = node_id(node)
-    st = _state.setdefault(n_id, {'armed': False})
+    st = _state.setdefault(n_id, {'armed': False, 'job': None})
     st['tree'], st['node'] = node.id_data.name, node.name
 
     if st.get('result_sig') == signature:
@@ -95,8 +129,10 @@ def request(node, signature, quick, full, delay):
         st['result'], st['result_sig'] = full(), signature
         return st['result']
 
+    if st.get('sig') != signature:             # a real change: restart the wait
+        st['changed'] = time.monotonic()
     st['sig'], st['full'], st['delay'] = signature, full, delay
-    st['changed'] = time.monotonic()
+    st['background'] = background
     if not st['armed']:
         st['armed'] = True
         bpy.app.timers.register(partial(_tick, n_id), first_interval=delay)
@@ -109,20 +145,45 @@ def _tick(n_id):
     st = _state.get(n_id)
     if st is None:
         return None
+
+    job = st['job']
+    if job is not None:
+        if not job.done:
+            return POLL
+        st['job'] = None
+        if job.error is not None:
+            print(f"sdf_numba: building the full result failed: {job.error}")
+        elif job.signature == st['sig']:
+            st['armed'] = False                 # nothing changed while it built
+            _deliver(st, job.result, job.signature)
+            return None
+        # otherwise the inputs changed while it built: drop it, wait again
+
     wait = st['delay'] - (time.monotonic() - st['changed'])
     if wait > 0:
         return wait                             # still changing: check again later
+
+    if st['background'] and background_safe():
+        st['job'] = _Job(st['sig'], st['full'])
+        return POLL
+
     st['armed'] = False
     try:
-        st['result'], st['result_sig'] = st['full'](), st['sig']
+        result = st['full']()
     except Exception as err:
         print(f"sdf_numba: building the full result failed: {err}")
         return None
+    _deliver(st, result, st['sig'])
+    return None
+
+
+def _deliver(st, result, signature):
+    """Cache the full result and re-run the node so it outputs it."""
+    st['result'], st['result_sig'] = result, signature
     tree = bpy.data.node_groups.get(st['tree'])
     node = tree.nodes.get(st['node']) if tree else None
     if node is not None:
-        node.process_node(None)                 # outputs the cached result
-    return None
+        node.process_node(None)
 
 
 def forget(node):

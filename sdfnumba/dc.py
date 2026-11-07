@@ -64,7 +64,7 @@ def _jacobi_eigen(A, V, w):
 
 
 @njit(types.Tuple((A2, A3i32))(FN, A3f, A2i, A1, A1, A1),
-      parallel=True, cache=True, fastmath=True)
+      parallel=True, cache=True, nogil=True, fastmath=True)
 def _place_vertices_dc(run, v, code, P, origin, step):
     nx, ny, nz = v.shape
     cx, cy, cz = nx - 1, ny - 1, nz - 1

@@ -225,3 +225,77 @@ def test_remesh_node_without_mesh_inputs_makes_its_own(env):
     # edges and corners kept: the box's corners are vertices of the result
     corner = np.array([0.75, 0.75, 0.75])
     assert np.linalg.norm(out_v - corner, axis=1).min() < 1e-6
+
+
+# --- building in the background ------------------------------------------------
+
+import threading
+
+
+def test_mesh_node_background_build(env):
+    node = make_node(env, 'sdf_mesh', 'SvSDFMeshNode', 'mesh_bg', resolution=64,
+                     background=True)
+    feed(node, csg(1.0))
+    node.process()
+    coarse = len(node.outputs['Vertices'].data[0])
+    env.clock[0] = 10.0
+    env.timers.run_all()                 # starts the thread, then polls it to the end
+    assert node.runs == 1
+    assert len(node.outputs['Vertices'].data[0]) > 4 * coarse
+
+
+class FakeNode:
+    def __init__(self, env, name):
+        self.name = self.node_id = name
+        self.id_data = types.SimpleNamespace(name='tree', nodes={name: self})
+        env.bpy.data.node_groups['tree'] = self.id_data
+        self.delivered = []
+
+    def process_node(self, context):
+        self.delivered.append(self.last)
+
+
+def test_background_result_made_stale_is_dropped(env):
+    helper = importlib.import_module('sverchok.utils.sdfnumba_helper')
+    node = FakeNode(env, 'fake')
+    gate = threading.Event()
+
+    def slow_full(value):
+        def full():
+            gate.wait(5)                 # held until the test lets it finish
+            return value
+        return full
+
+    def ask(value):
+        node.last = helper.request(node, value, lambda: 'coarse', slow_full(value),
+                                   0.5, background=True)
+        return node.last
+
+    assert ask('A') == 'coarse'
+    tick = env.timers.pending[0]
+    env.clock[0] = 1.0
+    assert tick() == helper.POLL           # quiet long enough: build 'A' starts
+    env.clock[0] = 1.1
+    assert ask('B') == 'coarse'          # the drag resumes while 'A' builds
+    gate.set()
+    helper._state['fake']['job'].thread.join()
+    wait = tick()                        # 'A' is finished but stale: dropped
+    assert node.delivered == [] and 0 < wait <= 0.5
+    env.clock[0] = 2.0
+    assert tick() == helper.POLL           # quiet again: build 'B'
+    helper._state['fake']['job'].thread.join()
+    assert tick() is None
+    assert ask('B') == 'B'               # only 'B' was ever delivered
+    assert helper._state['fake']['result_sig'] == 'B'
+
+
+def test_background_falls_back_when_threads_unsafe(env, monkeypatch):
+    helper = importlib.import_module('sverchok.utils.sdfnumba_helper')
+    monkeypatch.setattr(helper, 'background_safe', lambda: False)
+    node = FakeNode(env, 'fake2')
+    node.last = helper.request(node, 'A', lambda: 'coarse', lambda: 'A', 0.5,
+                               background=True)
+    env.clock[0] = 1.0
+    assert env.timers.pending[0]() is None   # built right away on this thread
+    assert helper._state['fake2']['job'] is None
+    assert helper._state['fake2']['result_sig'] == 'A'

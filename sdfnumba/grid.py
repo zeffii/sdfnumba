@@ -19,7 +19,7 @@ CHUNK = 4096
 BLOCK = 8
 
 
-@njit(types.void(FN, A2i, A1, A2, A1), parallel=True, cache=True)
+@njit(types.void(FN, A2i, A1, A2, A1), parallel=True, cache=True, nogil=True)
 def _eval_points(run, code, P, pts, out):
     n = pts.shape[0]
     nchunks = (n + CHUNK - 1) // CHUNK
@@ -31,7 +31,7 @@ def _eval_points(run, code, P, pts, out):
             out[i] = run(code, P, pts[i, 0], pts[i, 1], pts[i, 2], ps, ds, aux)
 
 
-@njit(types.void(FN_ID, A2i, A1, A2, A1i), parallel=True, cache=True)
+@njit(types.void(FN_ID, A2i, A1, A2, A1i), parallel=True, cache=True, nogil=True)
 def _eval_ids(run_id, code, P, pts, out):
     n = pts.shape[0]
     nchunks = (n + CHUNK - 1) // CHUNK
@@ -66,7 +66,7 @@ def primitive_ids(program, points):
     return program.prim_number[out]
 
 
-@njit(i64(FN, A2i, A1, A1, A1, i64, i64, i64, i64, A3f), parallel=True, cache=True)
+@njit(i64(FN, A2i, A1, A1, A1, i64, i64, i64, i64, A3f), parallel=True, cache=True, nogil=True)
 def _sample_grid(run, code, P, origin, step, nx, ny, nz, block, out):
     bx = (nx + block - 1) // block
     by = (ny + block - 1) // block
@@ -141,3 +141,17 @@ def estimate_bounds(program):
         hi = lo + where.max(axis=0) * d + d / 2
         lo = lo + where.min(axis=0) * d - d / 2
     return tuple(lo), tuple(hi)
+
+
+def background_safe():
+    """True if numba's threading layer allows parallel kernels to run from
+    two threads at once (the 'omp' and 'tbb' layers do; 'workqueue' doesn't).
+    Runs a tiny kernel first, since the layer is only chosen on first use."""
+    import numba
+    try:
+        layer = numba.threading_layer()
+    except ValueError:
+        from .api import sphere
+        evaluate(sphere(1).program(), np.zeros((1, 3)))
+        layer = numba.threading_layer()
+    return layer != 'workqueue'

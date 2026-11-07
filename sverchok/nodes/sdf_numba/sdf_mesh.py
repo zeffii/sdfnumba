@@ -63,6 +63,11 @@ class SvSDFMeshNode(SverchCustomTreeNode, bpy.types.Node):
         description='Output a coarse mesh while the shape keeps changing '
                     '(otherwise keep the last full mesh)')
 
+    background: BoolProperty(
+        name='Build in background', default=False, update=updateNode,
+        description='Build the full result on a separate thread so Blender stays '
+                    'responsive; results made stale by later changes are dropped')
+
     def sv_init(self, context):
         self.inputs.new('SvStringsSocket', 'SDF')
         self.outputs.new('SvVerticesSocket', 'Vertices')
@@ -79,6 +84,7 @@ class SvSDFMeshNode(SverchCustomTreeNode, bpy.types.Node):
         self.draw_buttons(context, layout)
         layout.prop(self, 'settle')
         layout.prop(self, 'preview')
+        layout.prop(self, 'background')
 
     def process(self):
         if not self.inputs['SDF'].is_linked or not any(s.is_linked for s in self.outputs):
@@ -97,7 +103,7 @@ class SvSDFMeshNode(SverchCustomTreeNode, bpy.types.Node):
         def full():
             return _mesh(sn, shape, res, sharp, tris)
 
-        result = request(self, signature, quick, full, self.settle)
+        result = request(self, signature, quick, full, self.settle, self.background)
         if result is None:
             return
         verts, edges, polys = result
