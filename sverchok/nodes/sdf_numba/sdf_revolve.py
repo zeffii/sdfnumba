@@ -9,14 +9,14 @@ The profile is closed loops of vertices in one plane, given as
 Several loops make holes (a loop inside another) or islands; every object on
 the sockets adds its loops to the same profile.
 
-Vertices off the profile's plane are moved onto it; the node warns when that
-moved something by more than float32 rounding.  The plane should contain the
-axis (XZ or YZ for Z); a tilted plane is revolved around the axis's
-projection onto it.
+Vertices off the profile's plane are moved onto it; with Show warnings on
+(N-panel) the node says so when that moved something by more than float32
+rounding.  The plane should contain the axis (XZ or YZ for Z); a tilted
+plane is revolved around the axis's projection onto it.
 """
 
 import bpy
-from bpy.props import EnumProperty
+from bpy.props import BoolProperty, EnumProperty
 
 from sverchok.data_structure import updateNode
 from sverchok.node_tree import SverchCustomTreeNode
@@ -41,6 +41,11 @@ class SvSDFRevolveNode(SverchCustomTreeNode, bpy.types.Node):
         name='Axis', default='Z', update=updateNode,
         items=[(a, a, f'Revolve around the world {a} axis') for a in 'XYZ'])
 
+    show_warnings: BoolProperty(
+        name='Show warnings', default=False, update=updateNode,
+        description='Say on the node when vertices were off the plane of the profile '
+                    'and had to be moved onto it')
+
     def sv_init(self, context):
         self.inputs.new('SvVerticesSocket', 'Vertices')
         self.inputs.new('SvStringsSocket', 'Edges')
@@ -49,6 +54,10 @@ class SvSDFRevolveNode(SverchCustomTreeNode, bpy.types.Node):
 
     def draw_buttons(self, context, layout):
         layout.row().prop(self, 'axis', expand=True)
+
+    def draw_buttons_ext(self, context, layout):
+        self.draw_buttons(context, layout)
+        layout.prop(self, 'show_warnings')
 
     def process(self):
         if not self.inputs['Vertices'].is_linked or not self.outputs['SDF'].is_linked:
@@ -70,7 +79,7 @@ class SvSDFRevolveNode(SverchCustomTreeNode, bpy.types.Node):
         if not loops:
             return
         shape, info = sn.revolve_profile(loops, self.axis)
-        if info.moved:
+        if info.moved and self.show_warnings:
             self.warning(f'{info.moved} vertices were off the profile plane (up to '
                          f'{info.max_offset:.3g}) and were moved onto it')
         self.outputs['SDF'].sv_set([shape])

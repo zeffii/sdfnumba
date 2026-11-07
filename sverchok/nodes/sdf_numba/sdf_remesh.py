@@ -89,6 +89,11 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         description='Build the full result on a separate thread so Blender stays '
                     'responsive; results made stale by later changes are dropped')
 
+    show_warnings: BoolProperty(
+        name='Show warnings', default=False, update=updateNode,
+        description='Report artifacts in the result on the node (thin or turned-over '
+                    'triangles, a too coarse starting mesh), with what to try')
+
     def sv_init(self, context):
         self.inputs.new('SvStringsSocket', 'SDF')
         self.inputs.new('SvVerticesSocket', 'Vertices')
@@ -119,6 +124,7 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         col.prop(self, 'iterations')
         layout.prop(self, 'settle')
         layout.prop(self, 'background')
+        layout.prop(self, 'show_warnings')
 
     def process(self):
         inputs = self.inputs
@@ -173,7 +179,7 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         if result is None:
             return
         (out_v, out_e, out_p), report = result
-        if report is not None:
+        if report is not None and self.show_warnings:
             for message in sn.advice(report):
                 self.warning(message)           # shown on the node
         self.outputs['Vertices'].sv_set(out_v)

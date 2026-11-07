@@ -310,14 +310,16 @@ def test_remesh_node_warns_about_artifacts(env):
     sys.path.insert(0, os.path.dirname(__file__))
     from test_sdfnumba import lamp_shade
     node = make_node(env, 'sdf_remesh', 'SvSDFRemeshNode', 'remesh_warn', settle=0.0,
-                     start_resolution=32)      # far too coarse for the 0.04 wall
+                     start_resolution=32,      # far too coarse for the 0.04 wall
+                     show_warnings=True)
     feed(node, lamp_shade())
     node.process()
     assert any('too coarse' in w for w in node.warnings)
 
 
 def test_remesh_node_quiet_when_clean(env):
-    node = make_node(env, 'sdf_remesh', 'SvSDFRemeshNode', 'remesh_ok', settle=0.0)
+    node = make_node(env, 'sdf_remesh', 'SvSDFRemeshNode', 'remesh_ok', settle=0.0,
+                     show_warnings=True)
     feed(node, sn.box(1.5))
     node.process()
     assert not getattr(node, 'warnings', [])
@@ -343,7 +345,7 @@ def test_revolve_node(env, form):
 
 
 def test_revolve_node_objects_are_islands_and_warns_when_flattening(env):
-    node = make_node(env, 'sdf_revolve', 'SvSDFRevolveNode', 'revolve')
+    node = make_node(env, 'sdf_revolve', 'SvSDFRevolveNode', 'revolve', show_warnings=True)
     far = [(x + 2, y + 0.05 * (i == 0), z) for i, (x, y, z) in enumerate(RECT)]
     node.inputs['Vertices'].sv_set([RECT, far])
     node.process()
@@ -351,3 +353,17 @@ def test_revolve_node_objects_are_islands_and_warns_when_flattening(env):
     assert shape(np.array([[0.5, 0, 0], [2.5, 0, 0], [1.5, 0, 0]])).ravel().tolist() \
         == pytest.approx([-0.5, -0.5, 0.5], abs=1e-9)
     assert any('moved onto it' in w for w in node.warnings)
+
+
+def test_warnings_off_by_default(env):
+    import sys
+    sys.path.insert(0, os.path.dirname(__file__))
+    from test_sdfnumba import lamp_shade
+    node = make_node(env, 'sdf_remesh', 'SvSDFRemeshNode', 'remesh_quiet', settle=0.0,
+                     start_resolution=32)
+    feed(node, lamp_shade())
+    node.process()
+    node2 = make_node(env, 'sdf_revolve', 'SvSDFRevolveNode', 'revolve_quiet')
+    node2.inputs['Vertices'].sv_set([[(0, 0.1, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)]])
+    node2.process()
+    assert not getattr(node, 'warnings', []) and not getattr(node2, 'warnings', [])

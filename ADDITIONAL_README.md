@@ -45,8 +45,9 @@ the mesh before and after remeshing side by side.
 The remesher avoids **needles** (one edge much shorter than the other two)
 and **caps** (nearly flat triangles), keeps edges shorter than the shape is
 thin, and never accepts a change that turns a triangle over. What it can't
-avoid, it reports: the node then shows a warning saying what went wrong and
-what to try.
+avoid, it can report: turn on **Show warnings** (N-panel, off by default)
+when a result looks wrong, and the node says what went wrong and what to
+try.
 
 - *The starting mesh is too coarse*: parts of the shape are thinner than
   the starting mesh's grid cells, so it arrives already folded. Raise
@@ -78,8 +79,8 @@ A loop inside another makes a hole; separate loops make islands, each swept
 into its own ring. Every object on the sockets adds to the same profile.
 
 All vertices must lie in one plane, which should contain the axis (XZ or YZ
-for Z). The node fits the plane and moves stray vertices onto it, warning
-only when one was off by more than float32 rounding (1e-5 of the profile's
+for Z). The node fits the plane and moves stray vertices onto it; with
+**Show warnings** on (N-panel) it says so, but only when one was off by more than float32 rounding (1e-5 of the profile's
 size). A plane within about 1° of a world plane is taken as that plane. A
 tilted plane works too: it is revolved around the axis's projection onto it.
 A profile may lie on either side of the axis, or across it. An edge drawn
