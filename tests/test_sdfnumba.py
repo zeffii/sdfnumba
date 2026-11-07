@@ -319,3 +319,14 @@ def test_lamp_shade_mesh_is_closed():
     verts, faces = lamp_shade().generate(samples=2 ** 18)
     assert_closed_manifold(faces)
     assert signed_volume(verts, faces) > 0
+
+
+def test_remesh_is_deterministic():
+    f = sn.sphere(1) & sn.box(1.5)
+    f -= sn.cylinder(0.5)
+    f.compile()                     # same code path for every run
+    verts, faces = f.generate(samples=2 ** 15, sharp=True)
+    runs = [sn.remesh(f, verts, faces) for _ in range(3)]
+    for V, T in runs[1:]:
+        np.testing.assert_array_equal(V, runs[0][0])
+        np.testing.assert_array_equal(T, runs[0][1])

@@ -93,16 +93,10 @@ def _project(run, code, P, V, mask, h, steps):
         V[i, 0], V[i, 1], V[i, 2] = x, y, z
 
 
-@njit(types.void(FN, A2i, A1, A2, A2i, A1i, A1i, A1b, A1i, f64, i64),
+@njit(types.void(FN, A2i, A1, A2, A2, A2i, A1i, A1i, A1b, A1i, f64),
       parallel=True, cache=True, nogil=True, fastmath=True)
-def _project_features(run, code, P, V, F, vf_start, vf, mask, rank, h, steps):
-    """Snap vertices onto creases and corners.
-
-    Each face around the vertex gives a sample point a little way into that
-    face; the SDF value and gradient there define that side's tangent plane.
-    The vertex moves to the point nearest to it that lies on all those planes
-    (a small QEF, as in dual contouring): two distinct planes put it on the
-    crease line, three put it on the corner, one is a plain projection."""
+def _snap_step(run, code, P, V, out, F, vf_start, vf, mask, rank, h):
+    """One snapping step: reads V, writes the moved positions to out."""
     for i in prange(V.shape[0]):
         if not mask[i]:
             continue
@@ -112,62 +106,82 @@ def _project_features(run, code, P, V, F, vf_start, vf, mask, rank, h, steps):
         A = np.empty((3, 3))
         Q = np.empty((3, 3))
         w = np.empty(3)
-        for _ in range(steps):
-            x, y, z = V[i, 0], V[i, 1], V[i, 2]
-            for r in range(3):
-                for c in range(3):
-                    A[r, c] = 0.0
-            b0 = b1 = b2 = 0.0
-            reach = 1e300
-            for k in range(vf_start[i], vf_start[i + 1]):
-                f = vf[k]
-                cx = (V[F[f, 0], 0] + V[F[f, 1], 0] + V[F[f, 2], 0]) / 3.0
-                cy = (V[F[f, 0], 1] + V[F[f, 1], 1] + V[F[f, 2], 1]) / 3.0
-                cz = (V[F[f, 0], 2] + V[F[f, 1], 2] + V[F[f, 2], 2]) / 3.0
-                reach = min(reach, math.sqrt((cx - x) ** 2 + (cy - y) ** 2 + (cz - z) ** 2))
-                sx, sy, sz = x + 0.5 * (cx - x), y + 0.5 * (cy - y), z + 0.5 * (cz - z)
-                d = run(code, P, sx, sy, sz, ps, ds, aux)
-                gx = run(code, P, sx + h, sy, sz, ps, ds, aux) - run(code, P, sx - h, sy, sz, ps, ds, aux)
-                gy = run(code, P, sx, sy + h, sz, ps, ds, aux) - run(code, P, sx, sy - h, sz, ps, ds, aux)
-                gz = run(code, P, sx, sy, sz + h, ps, ds, aux) - run(code, P, sx, sy, sz - h, ps, ds, aux)
-                gl = math.sqrt(gx * gx + gy * gy + gz * gz)
-                if gl == 0.0:
-                    continue
-                gx, gy, gz = gx / gl, gy / gl, gz / gl
-                # plane: g . p = g . s - d   (the SDF's zero level, locally)
-                # residual measured from the current vertex
-                rhs = gx * (sx - x) + gy * (sy - y) + gz * (sz - z) - d
-                A[0, 0] += gx * gx
-                A[0, 1] += gx * gy
-                A[0, 2] += gx * gz
-                A[1, 1] += gy * gy
-                A[1, 2] += gy * gz
-                A[2, 2] += gz * gz
-                b0 += gx * rhs
-                b1 += gy * rhs
-                b2 += gz * rhs
-            A[1, 0], A[2, 0], A[2, 1] = A[0, 1], A[0, 2], A[1, 2]
-            _jacobi_eigen(A, Q, w)
-            wmax = max(abs(w[0]), max(abs(w[1]), abs(w[2])))
-            # rank of each eigenvalue by size (0 = largest)
-            mx = my = mz = 0.0
+        x, y, z = V[i, 0], V[i, 1], V[i, 2]
+        for r in range(3):
             for c in range(3):
-                if wmax == 0.0 or abs(w[c]) < 0.05 * wmax:
-                    continue
-                order = 0
-                for c2 in range(3):
-                    if abs(w[c2]) > abs(w[c]) or (abs(w[c2]) == abs(w[c]) and c2 < c):
-                        order += 1
-                if order >= rank[i]:
-                    continue
-                t = (Q[0, c] * b0 + Q[1, c] * b1 + Q[2, c] * b2) / w[c]
-                mx += t * Q[0, c]
-                my += t * Q[1, c]
-                mz += t * Q[2, c]
-            ml = math.sqrt(mx * mx + my * my + mz * mz)
-            if ml > reach:          # never jump past the neighbourhood
-                mx, my, mz = mx * reach / ml, my * reach / ml, mz * reach / ml
-            V[i, 0], V[i, 1], V[i, 2] = x + mx, y + my, z + mz
+                A[r, c] = 0.0
+        b0 = b1 = b2 = 0.0
+        reach = 1e300
+        for k in range(vf_start[i], vf_start[i + 1]):
+            f = vf[k]
+            cx = (V[F[f, 0], 0] + V[F[f, 1], 0] + V[F[f, 2], 0]) / 3.0
+            cy = (V[F[f, 0], 1] + V[F[f, 1], 1] + V[F[f, 2], 1]) / 3.0
+            cz = (V[F[f, 0], 2] + V[F[f, 1], 2] + V[F[f, 2], 2]) / 3.0
+            reach = min(reach, math.sqrt((cx - x) ** 2 + (cy - y) ** 2 + (cz - z) ** 2))
+            sx, sy, sz = x + 0.5 * (cx - x), y + 0.5 * (cy - y), z + 0.5 * (cz - z)
+            d = run(code, P, sx, sy, sz, ps, ds, aux)
+            gx = run(code, P, sx + h, sy, sz, ps, ds, aux) - run(code, P, sx - h, sy, sz, ps, ds, aux)
+            gy = run(code, P, sx, sy + h, sz, ps, ds, aux) - run(code, P, sx, sy - h, sz, ps, ds, aux)
+            gz = run(code, P, sx, sy, sz + h, ps, ds, aux) - run(code, P, sx, sy, sz - h, ps, ds, aux)
+            gl = math.sqrt(gx * gx + gy * gy + gz * gz)
+            if gl == 0.0:
+                continue
+            gx, gy, gz = gx / gl, gy / gl, gz / gl
+            # plane: g . p = g . s - d   (the SDF's zero level, locally)
+            # residual measured from the current vertex
+            rhs = gx * (sx - x) + gy * (sy - y) + gz * (sz - z) - d
+            A[0, 0] += gx * gx
+            A[0, 1] += gx * gy
+            A[0, 2] += gx * gz
+            A[1, 1] += gy * gy
+            A[1, 2] += gy * gz
+            A[2, 2] += gz * gz
+            b0 += gx * rhs
+            b1 += gy * rhs
+            b2 += gz * rhs
+        A[1, 0], A[2, 0], A[2, 1] = A[0, 1], A[0, 2], A[1, 2]
+        _jacobi_eigen(A, Q, w)
+        wmax = max(abs(w[0]), max(abs(w[1]), abs(w[2])))
+        # rank of each eigenvalue by size (0 = largest)
+        mx = my = mz = 0.0
+        for c in range(3):
+            if wmax == 0.0 or abs(w[c]) < 0.05 * wmax:
+                continue
+            order = 0
+            for c2 in range(3):
+                if abs(w[c2]) > abs(w[c]) or (abs(w[c2]) == abs(w[c]) and c2 < c):
+                    order += 1
+            if order >= rank[i]:
+                continue
+            t = (Q[0, c] * b0 + Q[1, c] * b1 + Q[2, c] * b2) / w[c]
+            mx += t * Q[0, c]
+            my += t * Q[1, c]
+            mz += t * Q[2, c]
+        ml = math.sqrt(mx * mx + my * my + mz * mz)
+        if ml > reach:          # never jump past the neighbourhood
+            mx, my, mz = mx * reach / ml, my * reach / ml, mz * reach / ml
+        out[i, 0], out[i, 1], out[i, 2] = x + mx, y + my, z + mz
+
+
+@njit(types.void(FN, A2i, A1, A2, A2i, A1i, A1i, A1b, A1i, f64, i64),
+      cache=True, nogil=True, fastmath=True)
+def _project_features(run, code, P, V, F, vf_start, vf, mask, rank, h, steps):
+    """Snap vertices onto creases and corners.
+
+    Each face around the vertex gives a sample point a little way into that
+    face; the SDF value and gradient there define that side's tangent plane.
+    The vertex moves to the point nearest to it that lies on all those planes
+    (a small QEF, as in dual contouring): two distinct planes put it on the
+    crease line, three put it on the corner, one is a plain projection.
+
+    Each step reads every position from `src` and writes to `dst`, so no
+    vertex sees a neighbour half-way through its own move: the result
+    doesn't depend on how the threads happen to be scheduled."""
+    src = V.copy()
+    dst = V
+    for _ in range(steps):
+        _snap_step(run, code, P, src, dst, F, vf_start, vf, mask, rank, h)
+        src[:] = dst
 
 
 @njit(A1(FN, A2i, A1, A2, f64), parallel=True, cache=True, nogil=True, fastmath=True)
