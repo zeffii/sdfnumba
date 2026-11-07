@@ -14,7 +14,7 @@ __version__ = '0.1.0'
 # the public names: everything public in api, plus these
 _EXPORTS = {
     'mesh': ('generate', 'surface_nets', 'triangulate'),
-    'remesh': ('remesh', 'quality'),
+    'remesh': ('remesh', 'quality', 'advice'),
     'grid': ('evaluate', 'primitive_ids', 'sample_grid', 'estimate_bounds',
              'background_safe'),
 }

@@ -70,6 +70,11 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         name='Gradation', default=0.4, min=0.05, max=2.0, update=updateNode,
         description='How quickly triangles may grow away from creases and tight curves')
     iterations: IntProperty(name='Iterations', default=6, min=1, max=30, update=updateNode)
+    seed: IntProperty(
+        name='Seed', default=0, min=0, update=updateNode,
+        description='0 visits edges in their natural order; other values shuffle it, '
+                    'giving a different but equally valid mesh (try one when the node '
+                    'warns about artifacts)')
     start_resolution: IntProperty(
         name='Start resolution', default=64, min=8, max=512, update=updateNode,
         description='Without mesh inputs: grid cells along the longest side of the '
@@ -101,6 +106,7 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
             col.prop(self, 'start_resolution')
         col.prop(self, 'max_len')
         col.prop(self, 'detail')
+        col.prop(self, 'seed')
         col.prop(self, 'creases', toggle=True)
 
     def draw_buttons_ext(self, context, layout):
@@ -135,7 +141,7 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
                 return V, F
 
             def quick():
-                return mesh_outputs(V, F)       # the input, untouched
+                return mesh_outputs(V, F), None   # the input, untouched
         else:
             res = self.start_resolution
             mesh_key = ('own', res)
@@ -144,12 +150,13 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
                 return _start_mesh(shape, res, True)
 
             def quick():
-                return mesh_outputs(*_start_mesh(shape, min(res, 24), False))
+                return mesh_outputs(*_start_mesh(shape, min(res, 24), False)), None
 
         options = dict(max_len=self.max_len or None,
                        creases=self.creases, crease_angle=self.crease_angle,
                        crease_len=self.crease_len or None,
-                       gradation=self.gradation, iterations=self.iterations)
+                       gradation=self.gradation, iterations=self.iterations,
+                       seed=self.seed)
         detail = self.detail
         signature = (shape_signature(shape), mesh_key,
                      tuple(sorted(options.items())), detail)
@@ -157,14 +164,18 @@ class SvSDFRemeshNode(SverchCustomTreeNode, bpy.types.Node):
         def full():
             V0, F0 = start()
             max_len = options['max_len'] or np.linalg.norm(V0.max(0) - V0.min(0)) / 40
-            out_v, out_f = sn.remesh(shape, V0, F0, **dict(options, max_len=max_len,
-                                                           min_len=max_len / detail))
-            return mesh_outputs(out_v, out_f)
+            out_v, out_f, report = sn.remesh(shape, V0, F0, report=True,
+                                             **dict(options, max_len=max_len,
+                                                    min_len=max_len / detail))
+            return mesh_outputs(out_v, out_f), report
 
         result = request(self, signature, quick, full, self.settle, self.background)
         if result is None:
             return
-        out_v, out_e, out_p = result
+        (out_v, out_e, out_p), report = result
+        if report is not None:
+            for message in sn.advice(report):
+                self.warning(message)           # shown on the node
         self.outputs['Vertices'].sv_set(out_v)
         self.outputs['Edges'].sv_set(out_e)
         self.outputs['Polygons'].sv_set(out_p)

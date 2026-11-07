@@ -80,7 +80,10 @@ def _install_stubs(timers, clock):
     ds.updateNode = lambda self, context: None
     ds.node_id = lambda node: node.node_id
     nt = types.ModuleType('sverchok.node_tree')
-    nt.SverchCustomTreeNode = type('SverchCustomTreeNode', (), {})
+    class SverchCustomTreeNode:
+        def warning(self, message):            # Sverchok shows these on the node
+            self.__dict__.setdefault('warnings', []).append(message)
+    nt.SverchCustomTreeNode = SverchCustomTreeNode
     nodes = types.ModuleType('sverchok.nodes')
     nodes.__path__ = []
     utils = types.ModuleType('sverchok.utils')
@@ -299,3 +302,22 @@ def test_background_falls_back_when_threads_unsafe(env, monkeypatch):
     assert env.timers.pending[0]() is None   # built right away on this thread
     assert helper._state['fake2']['job'] is None
     assert helper._state['fake2']['result_sig'] == 'A'
+
+
+
+def test_remesh_node_warns_about_artifacts(env):
+    import sys
+    sys.path.insert(0, os.path.dirname(__file__))
+    from test_sdfnumba import lamp_shade
+    node = make_node(env, 'sdf_remesh', 'SvSDFRemeshNode', 'remesh_warn', settle=0.0,
+                     start_resolution=32)      # far too coarse for the 0.04 wall
+    feed(node, lamp_shade())
+    node.process()
+    assert any('too coarse' in w for w in node.warnings)
+
+
+def test_remesh_node_quiet_when_clean(env):
+    node = make_node(env, 'sdf_remesh', 'SvSDFRemeshNode', 'remesh_ok', settle=0.0)
+    feed(node, sn.box(1.5))
+    node.process()
+    assert not getattr(node, 'warnings', [])

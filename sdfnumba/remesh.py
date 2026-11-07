@@ -1018,6 +1018,24 @@ def quality(sdf, verts, tris):
     }
 
 
+def advice(report):
+    """Plain-language warnings for a remesh report (empty: nothing to say)."""
+    out = []
+    if report.get('runaway') or report.get('input_folded', 0) > 0:
+        n = report.get('input_folded', 0)
+        folded = f' ({n} folded triangles in it)' if n else ''
+        out.append(f"The starting mesh is too coarse for this shape's thinnest parts{folded}. "
+                   "Start from a finer mesh: raise Resolution on SDF Mesh, or Start resolution.")
+    elif report['folded'] > 0:
+        out.append(f"{report['folded']} triangles are turned over, usually where the shape "
+                   "narrows to a sharp edge. Try another Seed, or a smaller Edge length.")
+    thin = report['needles'] + report['caps']
+    if thin > 0.01:
+        out.append(f"{thin * 100:.1f}% of the triangles are thin (needles or caps). "
+                   "Try another Seed, or a higher Detail.")
+    return out
+
+
 def _distances(program, V):
     from .grid import evaluate
     return evaluate(program, V).ravel()

@@ -40,6 +40,27 @@ SDF Mesh's Vertices and Polygons to SDF Remesh as well as the shape. You can
 then pick the starting resolution and Sharp/smooth yourself, and look at
 the mesh before and after remeshing side by side.
 
+## SDF Remesh: artifacts, warnings and Seed
+
+The remesher avoids **needles** (one edge much shorter than the other two)
+and **caps** (nearly flat triangles), keeps edges shorter than the shape is
+thin, and never accepts a change that turns a triangle over. What it can't
+avoid, it reports: the node then shows a warning saying what went wrong and
+what to try.
+
+- *The starting mesh is too coarse*: parts of the shape are thinner than
+  the starting mesh's grid cells, so it arrives already folded. Raise
+  Resolution on SDF Mesh, or Start resolution. Remeshing stops early in this
+  case rather than growing out of control.
+- *Triangles are turned over*: usually where the shape narrows to a sharp
+  edge (e.g. where two equal-radius holes cross). Try another Seed, or a
+  smaller Edge length.
+- *Thin triangles*: try another Seed, or a higher Detail.
+
+**Seed** (default 0) only changes the order the remesher visits edges in.
+Every value gives an equally valid mesh, and the same seed always gives the
+same mesh; another seed is worth a try when a warning appears.
+
 ## SDF Mesh and SDF Remesh: Settle
 
 While values keep changing (a slider being dragged), SDF Mesh outputs a
