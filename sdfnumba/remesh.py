@@ -402,6 +402,7 @@ def _curvature(run, code, P, V, h):
 #           edge; where it is a crease edge, only if the cap is completely
 #           flat (its apex on the same crease)
 
+OPEN_COS = math.cos(math.radians(15.0))   # open-surface flips: triangles this flat
 NEEDLE_RATIO = 0.3      # shortest / longest edge below this: a needle
 CAP_RATIO = 0.25        # height / longest edge below this: a cap
 
@@ -787,10 +788,10 @@ def _collapse_batch(run, run_id, code, P, V, F, E, L, valence, vf_start, vf, loc
     return collapses
 
 
-@njit(i64(FN, FN_ID, A2i, A1, A2, A2i, A2i, A1i, A1i, A1i, A1b, A1i, f64, f64, b1),
+@njit(i64(FN, FN_ID, A2i, A1, A2, A2i, A2i, A1i, A1i, A1i, A1b, A1i, f64, f64, b1, A1b),
       cache=True, nogil=True)
 def _flip_batch(run, run_id, code, P, V, F, E, valence, vf_start, vf, lock, vcrease, h,
-                crease_cos, features_only):
+                crease_cos, features_only, far):
     """Flip edges.  mid_ab / mid_cd are |SDF| at the midpoints of the edge and
     of the other diagonal: an edge that cuts across a crease has a midpoint
     well off the surface, and is turned to lie along it (a feature flip).
@@ -810,10 +811,23 @@ def _flip_batch(run, run_id, code, P, V, F, E, valence, vf_start, vf, lock, vcre
             continue
         ex, ey, ez = V[a, 0] - V[b, 0], V[a, 1] - V[b, 1], V[a, 2] - V[b, 2]
         length = math.sqrt(ex * ex + ey * ey + ez * ez)
+        # open surface (see _open_surface): no crease to cut or follow, and
+        # the triangles' own normals are a safe guide, so the SDF isn't asked
+        open_ = far[a] and far[b] and far[c] and far[d]
+        if open_:
+            # ... and only while the two triangles are nearly coplanar
+            p0 = _normal(V, a, b, c)
+            p1 = _normal(V, b, a, d)
+            pp = p0[0] * p1[0] + p0[1] * p1[1] + p0[2] * p1[2]
+            l0 = p0[0] * p0[0] + p0[1] * p0[1] + p0[2] * p0[2]
+            l1 = p1[0] * p1[0] + p1[1] * p1[1] + p1[2] * p1[2]
+            open_ = pp > OPEN_COS * math.sqrt(l0 * l1)
+        if open_ and features_only:
+            continue
         flat = ((_min_angle(V, a, b, c) < 0.02 and _cap_apex_t(V, a, b, c) >= 0.0) or
                 (_min_angle(V, b, a, d) < 0.02 and _cap_apex_t(V, b, a, d) >= 0.0))
-        cuts_ab = _cuts_crease(run, code, P, V, a, b, h, crease_cos, ps, ds, aux)
-        cuts_cd = _cuts_crease(run, code, P, V, c, d, h, crease_cos, ps, ds, aux)
+        cuts_ab = False if open_ else _cuts_crease(run, code, P, V, a, b, h, crease_cos, ps, ds, aux)
+        cuts_cd = False if open_ else _cuts_crease(run, code, P, V, c, d, h, crease_cos, ps, ds, aux)
         if flat:
             # a cap flattened onto its long edge (its apex on the same crease):
             # the path through the apex already follows the crease, so this
@@ -825,7 +839,8 @@ def _flip_batch(run, run_id, code, P, V, F, E, valence, vf_start, vf, lock, vcre
             pass                      # feature flip: the other diagonal runs along the crease
         elif features_only:
             continue
-        elif _is_crease_edge(run, run_id, code, P, V, F, a, b, f0, f1, vcrease, h, crease_cos, ps, ds, aux, idstack):
+        elif not open_ and _is_crease_edge(run, run_id, code, P, V, F, a, b, f0, f1, vcrease, h,
+                                           crease_cos, ps, ds, aux, idstack):
             continue
         else:
             q_before = min(_min_angle(V, a, b, c), _min_angle(V, b, a, d))
@@ -858,8 +873,8 @@ def _flip_batch(run, run_id, code, P, V, F, E, valence, vf_start, vf, lock, vcre
         if (m0[0] * sx + m0[1] * sy + m0[2] * sz) <= 0.0 or (m1[0] * sx + m1[1] * sy + m1[2] * sz) <= 0.0:
             continue
         # ... and the way the surface does (on a crease the old normals are no guide)
-        if not (_faces_out(run, code, P, V, a, d, c, h, ps, ds, aux) and
-                _faces_out(run, code, P, V, d, b, c, h, ps, ds, aux)):
+        if not open_ and not (_faces_out(run, code, P, V, a, d, c, h, ps, ds, aux) and
+                              _faces_out(run, code, P, V, d, b, c, h, ps, ds, aux)):
             continue
         F[f0, 0], F[f0, 1], F[f0, 2] = a, d, c
         F[f1, 0], F[f1, 1], F[f1, 2] = d, b, c
@@ -932,13 +947,33 @@ def _relax(V, F, vf_start, vf, crease_count, E, crease_e, out):
 
 # --- driver ----------------------------------------------------------------------
 
-def _flips(program, V, F, vcrease, h, ccos, features_only, passes, order):
+OPEN_RINGS = 5       # edge hops from a crease or thin part before the surface is open
+
+
+def _open_surface(E, n, near):
+    """Vertices at least OPEN_RINGS edges away from any `near` vertex
+    (on a crease, or where the shape is thin).  There a flip or a small move
+    can't cut a crease or reach the far side of the shape, so the cheap
+    geometric checks are enough and the SDF needn't be sampled."""
+    near = near.copy()
+    a, b = E[:, 0], E[:, 1]
+    for _ in range(OPEN_RINGS):
+        grow = near.copy()
+        grow[a[near[b]]] = True
+        grow[b[near[a]]] = True
+        near = grow
+    return ~near
+
+
+def _flips(program, V, F, vcrease, h, ccos, features_only, passes, order, thin=None):
     for _ in range(passes):
         mesh = Mesh(V, F)
         lock = np.zeros(len(V), dtype=bool)
+        far = (np.zeros(len(V), dtype=bool) if thin is None    # None: no shortcuts
+               else _open_surface(mesh.E, len(V), (vcrease > 0) | thin))
         done = _flip_batch(program.run, program.run_id, program.code, program.params,
                            V, F, order(mesh.E), mesh.valence, mesh.vf_start, mesh.vf, lock,
-                           vcrease, h, ccos, features_only)
+                           vcrease, h, ccos, features_only, far)
         if done == 0:
             break
 
@@ -966,25 +1001,68 @@ def _folded(program, V, F, h):
     return (np.cross(b - a, c - a) * grad).sum(1) < 0
 
 
-def _undo_folds(program, V, F, before, h, rounds=8):
+def _undo_folds(program, V, F, before, h, rounds=8, far=None, ref=None):
     """Relaxing and snapping move vertices without checking the triangles
     around them; where a triangle got turned over, put its corners back
     where they were before the move (in place), until none is left.  If
     that keeps tipping neighbours over, the undo widens to their corners
-    too; at worst everything is put back, which had no new folds."""
-    was_folded = _folded(program, before, F, h)
-    moved = np.zeros(len(V), dtype=bool)
+    too; at worst everything is put back, which had no new folds.
+
+    Only triangles with a moved corner are checked.  On open surface (`far`,
+    see _open_surface) they are checked against `ref`, the SDF normals at
+    the corners before the move, which needs no new SDF samples; elsewhere
+    against the SDF at the triangle."""
+    moved = np.any(V != before, axis=1)
+    sel = np.flatnonzero(moved[F].any(1))
+    if not len(sel):
+        return
+    T = F[sel]
+    use_ref = far is not None and ref is not None
+
+    def align(X, Q):
+        """cos between each triangle's normal and its corners' reference normals."""
+        n = np.cross(X[Q[:, 1]] - X[Q[:, 0]], X[Q[:, 2]] - X[Q[:, 0]])
+        r = ref[Q[:, 0]] + ref[Q[:, 1]] + ref[Q[:, 2]]
+        return (n * r).sum(1) / (np.linalg.norm(n, axis=1) * np.linalg.norm(r, axis=1) + 1e-300)
+
+    def split(T):
+        """Open-surface triangles well aligned before the move get the cheap
+        check; the rest are checked against the SDF."""
+        if not use_ref or not len(T):
+            return np.zeros(len(T), dtype=bool), T
+        geo = far[T].all(1)
+        geo[geo] = align(before, T[geo]) > 0.5
+        return geo, T[~geo]
+
+    geo, sdf_t = split(T)
+    was_folded = _folded(program, before, sdf_t, h)
+
+    def new_folds():
+        bad = np.zeros(len(T), dtype=bool)
+        bad[~geo] = _folded(program, V, sdf_t, h) & ~was_folded
+        if geo.any():
+            # cheap: still well aligned is fine; anything doubtful asks the SDF
+            # (it wasn't folded before: it was well aligned)
+            g = np.flatnonzero(geo)
+            doubtful = g[align(V, T[g]) < 0.3]
+            if len(doubtful):
+                bad[doubtful] = _folded(program, V, T[doubtful], h)
+        return bad
+
     for r in range(rounds):
-        bad = _folded(program, V, F, h) & ~was_folded
+        bad = new_folds()
         if not bad.any():
             return
         undo = np.zeros(len(V), dtype=bool)
-        undo[F[bad].ravel()] = True
+        undo[T[bad].ravel()] = True
         if r >= 2:                       # widen: every triangle touching those corners
             undo[F[undo[F].any(1)].ravel()] = True
-        moved |= undo
+            sel = np.flatnonzero((moved | undo)[F].any(1))   # checked triangles grow with it
+            T = F[sel]
+            geo, sdf_t = split(T)
+            was_folded = _folded(program, before, sdf_t, h)
         V[undo] = before[undo]
-    if (_folded(program, V, F, h) & ~was_folded).any():
+    if new_folds().any():
         V[:] = before
 
 
@@ -1149,8 +1227,13 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
         expected = _expected_triangles(V, F, L)
         most = max(4.0 * expected + 1000, 2.0 * len(F))
 
+        # where edges are held short (thin parts, tight curves) the SDF is
+        # always consulted; see _open_surface
+        def held(L):
+            return L <= 1.01 * min_len
+
         # turn edges that cut across creases (the input may have some)
-        _flips(program, V, F, vcrease, h_grad, ccos, True, 3, order)
+        _flips(program, V, F, vcrease, h_grad, ccos, True, 3, order, held(L))
 
         # split until nothing is too long
         for _ in range(8):
@@ -1204,7 +1287,7 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
             runaway = True                      # past this point it can't end well
 
         # flip away caps and towards valence 6, and turn any edge that cuts a crease
-        _flips(program, V, F, vcrease, h_grad, ccos, False, 3, order)
+        _flips(program, V, F, vcrease, h_grad, ccos, False, 3, order, held(L))
 
         # relax and project (crease edges looked up afresh for the sliding)
         mesh = Mesh(V, F)
@@ -1220,7 +1303,8 @@ def remesh(sdf, verts, faces, max_len=None, min_len=None, tolerance=None,
             rank = np.where(vcrease > 2, 3, 2)
             _project_features(run, code, P, V, F, mesh.vf_start, mesh.vf, on_crease, rank,
                               h_grad, 3)
-        _undo_folds(program, V, F, before, h_grad)
+        _undo_folds(program, V, F, before, h_grad, ref=ref,
+                    far=_open_surface(mesh.E, len(V), (vcrease > 0) | held(L)))
 
     # clean-up: crease snapping can pull neighbouring vertices onto the same
     # point (zero-area triangles); merge those and any needle left, and flip
