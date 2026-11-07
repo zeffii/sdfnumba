@@ -29,10 +29,10 @@ once per machine).
 
 ## Trying the viewer
 
-`examples/sdfnumba_snlite_csg.py` builds a shape in a Scripted Node Lite. Load it into
+`examples/sdfnumba_csg.py` builds a shape in a Scripted Node Lite. Load it into
 an SNLite node and connect its `sdf` output to the SDF Viewer.
 
-More in `examples/`: a lamp shade, and revolved profiles (`sdfnumba_snlite_revolve_*`):
+More in `examples/`: a lamp shade, and revolved profiles (`sdfnumba_revolve_*`):
 a vase, a V-belt pulley (holes and islands), a chess rook, and one that
 revolves any flat mesh you feed it.
 
